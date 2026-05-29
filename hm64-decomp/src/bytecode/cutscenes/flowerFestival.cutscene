@@ -1,0 +1,4052 @@
+; ============================================
+; Bank 20 - Flower Festival
+; ============================================
+;
+; The Mayor asks the player to pick a dance partner from the
+; five bachelorettes. Villagers populate the square and react
+; to the choice. The gHarvestKing value (set by a prior Sowing
+; Festival / Starry Night Festival outcome) swaps in different
+; NPCs and dialogue branches. gFlowerFestivalGoddess tracks
+; which girl was picked in a prior year and gates
+; goddess-flavored dialogue.
+;
+; Cutscene indices:
+;   950 (FLOWER_FESTIVAL) -> .main: full festival dispatch
+;
+; gHarvestKing values (source: src/game/cutscenes.c):
+;   0 = PLAYER, 1 = HARRIS, 2 = GRAY, 3 = JEFF, 4 = CLIFF, 5 = KAI,
+;   6 = POTION_SHOP_DEALER
+;
+; gFlowerFestivalGoddess values (girl chosen in prior year):
+;   0 = MARIA, 1 = POPURI, 2 = ELLI, 3 = ANN, 4 = KAREN
+;
+; Executor slot usage:
+;   0      - player
+;   1..5   - Maria, Popuri, Elli, Ann, Karen (bachelorettes)
+;   6..13  - mayor / lillia / basil / kent / stu /
+;            potion shop dealer / rick / shady salesman
+;   14..18 - Harris, Gray, Jeff, Cliff, Kai (bachelors)
+;   19     - Mayor wife
+;   20     - Pastor
+;   21..28 - balloon sprites
+;   32     - power-nut shine
+;   33     - end-of-dance fade controller
+;   36     - NPC tracking target helper
+;   37     - A-button / timer poll helper
+;   38     - map-load helper
+;
+; Local variables (declared below):
+;   flags                 - bitfield of festival state flags
+;   affectionBumpedBits   - one bit per NPC marking already-bumped
+;                           this session (see each NPC interaction
+;                           branch for exact bit numbers)
+
+#include "entities.h"
+#include "texts.h"
+#include "dialogues.h"
+#include "entityBuffers.h"
+
+#define MAIN_MAP_INDEX 0
+#define MARRIED 0
+
+; gHarvestKing values (see src/game/cutscenes.c)
+#define KING_PLAYER 0
+#define KING_HARRIS 1
+#define KING_GRAY 2
+#define KING_JEFF 3
+#define KING_CLIFF 4
+#define KING_KAI 5
+#define KING_POTION_SHOP_DEALER 6
+
+; gFlowerFestivalGoddess values (chosen girl, persisted across years)
+#define FFG_MARIA 0
+#define FFG_POPURI 1
+#define FFG_ELLI 2
+#define FFG_ANN 3
+#define FFG_KAREN 4
+
+; npcAffection indices beyond the transpiler-built-in set (MARIA..KAI)
+#define NPC_MAYOR              0xB
+#define NPC_MAYOR_WIFE         0xC
+#define NPC_LILLIA             0xD
+#define NPC_BASIL              0xE
+#define NPC_POTION_SHOP_DEALER 0x13
+#define NPC_KENT               0x14
+#define NPC_STU                0x15
+#define NPC_RICK               0x18
+#define NPC_PASTOR             0x19
+
+.buffer 2
+
+; flags bit meanings (bitfield local):
+;   bit 0 - player is paused in dialogue
+;   bit 1 - first-time setup complete (set by .player_post_intro_walk)
+;   bit 2 - a girl has been chosen (dance phase active)
+;   bit 3 - shady-salesman flow accepted (power nut purchased)
+.local flags, u32
+; affectionBumpedBits bit meanings: one bit per NPC; a bit is set
+; after that NPC has had their affection bumped this session so
+; repeat interactions do not keep stacking. Bit layout is
+; executor-dependent; see each NPC interaction branch for the
+; exact bit number.
+.local affectionBumpedBits, u32
+
+.array npcAffection, u8
+.array lifeEventBits, u32
+
+; ============================================================
+; DISPATCH - cutscene 950 entry point
+; ============================================================
+
+.main:
+    SET_SPECIAL_BIT 31, gCutsceneCompletionFlags
+    SET_SPECIAL_BIT 12, gCutsceneCompletionFlags
+    SET_SPECIAL_BIT 13, gCutsceneCompletionFlags
+    SET_SPECIAL_BIT 14, gCutsceneCompletionFlags
+    SET_SPECIAL_BIT 15, gCutsceneCompletionFlags
+    INIT_MAP_ADDITION 1, 0
+    INIT_MAP_ADDITION 2, 0
+    INIT_MAP_ADDITION 4, 0
+    INIT_MAP_ADDITION 6, 0
+    PAUSE_ENTITIES
+    STOP_SEQUENCE_WITH_FADE 0, 8
+    IDLE_WHILE_SEQUENCE_PLAYING 0
+    SET_AUDIO_SEQUENCE 0, _festivalThemeSegmentRomStart, _festivalThemeSegmentRomEnd
+    SET_AUDIO_SEQUENCE_VOLUME 0, 128, 8
+    UPDATE_U8_VALUE 5, 255, gHappiness
+    TOGGLE_PAUSE_ENTITIES
+    EXECUTE_SUBROUTINE .setup_message_box
+    BRANCH_U16_VAR_WITHIN_RANGE 950, 950, gCutsceneIndex, .spawn_npcs
+
+; ============================================================
+; SHARED HELPERS
+; ============================================================
+
+.exit_cutscene:
+    CLEAR_SPECIAL_BIT 0, flags
+    CLEAR_SPECIAL_BIT 1, flags
+    CLEAR_SPECIAL_BIT 2, flags
+    SET_SPECIAL_BIT 0, gCutsceneCompletionFlags
+    DEACTIVATE_SELF
+
+.wait_loop:
+    SET_WAIT_FRAMES 1
+    EXECUTE_SUBROUTINE .wait_loop
+
+.setup_message_box:
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 352
+    RETURN_FROM_SUBROUTINE
+
+.setup_tracking_helper:
+    SETUP_ENTITY 22, ENTITY_ASSET_STATIC_ITEM, 1
+    SET_ENTITY_ANIMATIONS 22, 0, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    RETURN_FROM_SUBROUTINE
+
+.track_girl1:
+    EXECUTE_SUBROUTINE .setup_tracking_helper
+    SET_ENTITY_TRACKING_TARGET 1, 0, 14, 20, 255
+    SET_ENTITY_ANIMATION 3
+    EXECUTE_SUBROUTINE .wait_loop
+
+.track_girl2:
+    EXECUTE_SUBROUTINE .setup_tracking_helper
+    SET_ENTITY_TRACKING_TARGET 2, 0, 14, 20, 255
+    SET_ENTITY_ANIMATION 3
+    EXECUTE_SUBROUTINE .wait_loop
+
+.track_girl3:
+    EXECUTE_SUBROUTINE .setup_tracking_helper
+    SET_ENTITY_TRACKING_TARGET 3, 0, 14, 20, 255
+    SET_ENTITY_ANIMATION 3
+    EXECUTE_SUBROUTINE .wait_loop
+
+.track_girl4:
+    EXECUTE_SUBROUTINE .setup_tracking_helper
+    SET_ENTITY_TRACKING_TARGET 4, 0, 14, 20, 255
+    SET_ENTITY_ANIMATION 3
+    EXECUTE_SUBROUTINE .wait_loop
+
+.track_girl5:
+    EXECUTE_SUBROUTINE .setup_tracking_helper
+    SET_ENTITY_TRACKING_TARGET 5, 0, 14, 20, 255
+    SET_ENTITY_ANIMATION 3
+    EXECUTE_SUBROUTINE .wait_loop
+
+.track_player_then_exit:
+    SET_ENTITY_TRACKING_TARGET 0, 0, 14, 20, 255
+    SET_WAIT_FRAMES 20
+    DEACTIVATE_SELF
+
+.setup_player:
+    SETUP_ENTITY 0, ENTITY_ASSET_PLAYER, 1
+    SET_ENTITY_ANIMATIONS 0, 0, 8, 16, 24, 32, 40
+    SET_BEHAVIOR_FLAGS CUTSCENE_ASSET_BEHAVIOR_TRACK_ENTITY
+    RETURN_FROM_SUBROUTINE
+
+.face_sw_loop:
+    SET_ASSET_ROTATION 0
+    EXECUTE_SUBROUTINE .wait_loop
+
+.face_se_loop:
+    SET_ASSET_ROTATION 6
+    EXECUTE_SUBROUTINE .wait_loop
+
+; ============================================================
+; MAIN DISPATCH - spawn NPCs and gate Harvest-King variant
+; ============================================================
+
+.spawn_npcs:
+    SPAWN_EXECUTOR 6, .mayor_wait
+    SPAWN_EXECUTOR 7, .lillia_wait
+    SPAWN_EXECUTOR 8, .basil_wait
+    SPAWN_EXECUTOR 9, .kent_wait
+    SPAWN_EXECUTOR 10, .stu_wait
+    SPAWN_EXECUTOR 11, .potion_wait
+    SPAWN_EXECUTOR 12, .rick_wait
+    BRANCH_ON_SPECIAL_BIT 7, acquiredPowerNutBits, .gate_harvest_king
+    SPAWN_EXECUTOR 13, .shady_wait
+
+.gate_harvest_king:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gHarvestKing, .spawn_bachelor_harris
+    BRANCH_U8_VAR_WITHIN_RANGE 30, 255, npcAffection[HARRIS], .spawn_bachelor_harris
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gHarvestKing, .spawn_bachelor_gray
+    BRANCH_U8_VAR_WITHIN_RANGE 50, 255, npcAffection[GRAY], .spawn_bachelor_gray
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gHarvestKing, .spawn_bachelor_jeff
+    BRANCH_U8_VAR_WITHIN_RANGE 30, 255, npcAffection[JEFF], .spawn_bachelor_jeff
+    BRANCH_ON_SPECIAL_BIT 13, lifeEventBits[1], .gate_king_cliff
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gHarvestKing, .spawn_bachelor_cliff
+    BRANCH_U8_VAR_WITHIN_RANGE 50, 255, npcAffection[CLIFF], .spawn_bachelor_cliff
+
+.gate_king_cliff:
+    BRANCH_ON_SPECIAL_BIT 14, lifeEventBits[1], .gate_king_kai
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gHarvestKing, .spawn_bachelor_kai
+    BRANCH_U8_VAR_WITHIN_RANGE 50, 255, npcAffection[KAI], .spawn_bachelor_kai
+
+.gate_king_kai:
+    SPAWN_EXECUTOR 19, .mayor_wife_wait
+    SPAWN_EXECUTOR 20, .pastor_wait
+    EXECUTE_SUBROUTINE .goddess_intro
+
+; ----- Post-choice girl entrance dispatch (gFlowerFestivalGoddess 0..4) -----
+
+.after_choose_maria:
+    SPAWN_EXECUTOR 3, .elli_enter
+    SPAWN_EXECUTOR 4, .ann_enter
+    SET_WAIT_FRAMES 40
+    SPAWN_EXECUTOR 2, .popuri_enter
+    BRANCH_ON_SPECIAL_BIT 15, lifeEventBits[1], .after_choose_maria_tail
+    SPAWN_EXECUTOR 5, .karen_enter_with_ann
+
+.after_choose_maria_tail:
+    SET_WAIT_FRAMES 100
+    SPAWN_EXECUTOR 1, .maria_after_dance
+    DEACTIVATE_SELF
+
+.after_choose_popuri:
+    SPAWN_EXECUTOR 3, .elli_enter
+    SPAWN_EXECUTOR 4, .ann_enter
+    SET_WAIT_FRAMES 40
+    SPAWN_EXECUTOR 1, .maria_enter
+    BRANCH_ON_SPECIAL_BIT 15, lifeEventBits[1], .after_choose_popuri_tail
+    SPAWN_EXECUTOR 5, .karen_enter_with_popuri
+
+.after_choose_popuri_tail:
+    SET_WAIT_FRAMES 100
+    SPAWN_EXECUTOR 2, .popuri_after_dance
+    DEACTIVATE_SELF
+
+.after_choose_elli:
+    SPAWN_EXECUTOR 4, .ann_enter
+    BRANCH_ON_SPECIAL_BIT 15, lifeEventBits[1], .after_choose_elli_tail
+    SPAWN_EXECUTOR 5, .karen_enter_with_elli
+
+.after_choose_elli_tail:
+    SET_WAIT_FRAMES 40
+    SPAWN_EXECUTOR 1, .maria_enter
+    SPAWN_EXECUTOR 2, .popuri_enter
+    SET_WAIT_FRAMES 100
+    SPAWN_EXECUTOR 3, .elli_after_dance
+    DEACTIVATE_SELF
+
+.after_choose_ann:
+    SPAWN_EXECUTOR 3, .elli_enter
+    BRANCH_ON_SPECIAL_BIT 15, lifeEventBits[1], .after_choose_ann_tail
+    SPAWN_EXECUTOR 5, .karen_enter_with_maria
+
+.after_choose_ann_tail:
+    SET_WAIT_FRAMES 40
+    SPAWN_EXECUTOR 1, .maria_enter
+    SPAWN_EXECUTOR 2, .popuri_enter
+    SET_WAIT_FRAMES 100
+    SPAWN_EXECUTOR 4, .ann_after_dance
+    DEACTIVATE_SELF
+
+.after_choose_karen:
+    SPAWN_EXECUTOR 3, .elli_enter
+    SPAWN_EXECUTOR 4, .ann_enter
+    SET_WAIT_FRAMES 40
+    SPAWN_EXECUTOR 1, .maria_enter
+    SPAWN_EXECUTOR 2, .popuri_enter
+    SET_WAIT_FRAMES 100
+    SPAWN_EXECUTOR 5, .karen_after_dance
+    DEACTIVATE_SELF
+
+; ----- Harvest-King bachelor spawn (branches from .gate_harvest_king) -----
+
+.spawn_bachelor_harris:
+    SPAWN_EXECUTOR 14, .harris_wait
+    RETURN_FROM_SUBROUTINE
+
+.spawn_bachelor_gray:
+    SPAWN_EXECUTOR 15, .gray_wait
+    RETURN_FROM_SUBROUTINE
+
+.spawn_bachelor_jeff:
+    SPAWN_EXECUTOR 16, .jeff_wait
+    RETURN_FROM_SUBROUTINE
+
+.spawn_bachelor_cliff:
+    SPAWN_EXECUTOR 17, .cliff_wait
+    RETURN_FROM_SUBROUTINE
+
+.spawn_bachelor_kai:
+    SPAWN_EXECUTOR 18, .kai_wait
+    RETURN_FROM_SUBROUTINE
+
+; ============================================================
+; INTRO - Mayor speech, poll for chosen girl, then dance setup
+; ============================================================
+
+.map_helper_southeast:
+    SETUP_MAP_ASSET MAIN_MAP_INDEX
+    SET_ASSET_ROTATION 7
+    SET_COORDINATES -96, 96, 64
+    EXECUTE_SUBROUTINE .wait_loop
+
+.poll_until_chosen:
+    SET_WAIT_FRAMES 1
+    BRANCH_ON_SPECIAL_BIT 0, flags, .poll_until_chosen
+    UPDATE_U16_VALUE 1, 9999, D_80189824
+    BRANCH_U16_VAR_WITHIN_RANGE 1000, 1000, D_80189824, .after_chosen_dance_setup
+    EXECUTE_SUBROUTINE .poll_until_chosen
+
+.poll_during_interact:
+    SET_WAIT_FRAMES 1
+    BRANCH_ON_SPECIAL_BIT 0, flags, .poll_during_interact
+    UPDATE_U16_VALUE 1, 9999, D_80189824
+    BRANCH_U16_VAR_WITHIN_RANGE 1000, 1000, D_80189824, .poll_during_interact_msg
+    EXECUTE_SUBROUTINE .poll_during_interact
+
+.poll_during_interact_msg:
+    PAUSE_ENTITY 0
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,6
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_U16_VALUE 0, D_80189824
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .poll_during_interact
+
+.after_chosen_dance_setup:
+    PAUSE_ENTITIES
+    SET_WAIT_FRAMES 1
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    SET_WAIT_FRAMES 40
+    TOGGLE_PAUSE_ENTITIES
+    SPAWN_EXECUTOR 0, .player_spawn_sw
+    SET_OTHER_EXECUTOR_PTR 6, .face_sw_loop
+    SET_WAIT_FRAMES 1
+    SPAWN_EXECUTOR 38, .map_helper_southeast
+    SET_WAIT_FRAMES 1
+    UPDATE_GLOBAL_RGBA 255, 255, 255, 255, 8
+    SET_WAIT_FRAMES 40
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .after_choose_maria
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .after_choose_popuri
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .after_choose_elli
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .after_choose_ann
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .after_choose_karen
+    CLEAR_SPECIAL_BIT 0, flags
+    DEACTIVATE_SELF
+
+.goddess_intro:
+    EXECUTE_SUBROUTINE .setup_player
+    SET_COORDINATES -144, 0, -56
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 1
+    UPDATE_GLOBAL_RGBA 255, 255, 255, 255, 8
+    WAIT_RGBA_FINISHED
+    SET_WAIT_FRAMES 15
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,0
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_U16_VALUE 0, D_80189824
+    SPAWN_EXECUTOR 37, .poll_until_chosen
+    SET_ENTITY_MAP_SPACE_INDEPENDENT FALSE
+    DEACTIVATE_SELF
+
+; ----- Player (slot 0) state variants -----
+
+.player_spawn_sw:
+    EXECUTE_SUBROUTINE .setup_player
+    SET_BEHAVIOR_FLAGS 0
+    SET_COORDINATES 32, 0, 32
+    SET_ASSET_ROTATION 1
+    EXECUTE_SUBROUTINE .wait_loop
+
+.player_post_intro_walk:
+    SET_BEHAVIOR_FLAGS CUTSCENE_ASSET_BEHAVIOR_TRACK_ENTITY
+    SET_WAIT_FRAMES 1
+    SET_SPECIAL_BIT 1, flags
+    SET_OTHER_EXECUTOR_PTR 6, .face_se_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gHarvestKing, .king_slot_harris
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gHarvestKing, .king_slot_gray
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gHarvestKing, .king_slot_jeff
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gHarvestKing, .king_slot_cliff
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gHarvestKing, .king_slot_kai
+    BRANCH_U8_VAR_WITHIN_RANGE 6, 6, gHarvestKing, .king_slot_potion
+    UPDATE_GLOBAL_RGBA 255, 255, 255, 255, 8
+    WAIT_RGBA_FINISHED
+    SET_ENTITY_MAP_SPACE_INDEPENDENT FALSE
+    DEACTIVATE_SELF
+
+.player_bow_to_girl:
+    EXECUTE_SUBROUTINE .setup_player
+    SET_OTHER_EXECUTOR_PTR 36, .track_player_then_exit
+    SET_ENTITY_DIRECTIONAL_ANIMATION 24
+    SET_WAIT_FRAMES 20
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ENTITY_MAP_SPACE_INDEPENDENT FALSE
+    PAUSE_ENTITY 0
+    DEACTIVATE_SELF
+
+.king_slot_harris:
+    SET_OTHER_EXECUTOR_PTR 14, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_slot_gray:
+    SET_OTHER_EXECUTOR_PTR 15, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_slot_jeff:
+    SET_OTHER_EXECUTOR_PTR 16, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_slot_cliff:
+    SET_OTHER_EXECUTOR_PTR 17, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_slot_kai:
+    SET_OTHER_EXECUTOR_PTR 18, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_slot_potion:
+    SET_OTHER_EXECUTOR_PTR 11, .king_avatar_pos
+    RETURN_FROM_SUBROUTINE
+
+.king_avatar_pos:
+    SET_COORDINATES -176, 0, -88
+    SET_ASSET_ROTATION 6
+    EXECUTE_SUBROUTINE .wait_loop
+
+; ============================================================
+; NPC EXECUTORS - each NPC has:
+;   _wait       - idle state, runs callback on interact
+;   _on_interact- bumps affection (once per session)
+;   _talk*      - message branches varied by affection/state
+;   _talk_done  - shared close handler (resumes _wait)
+; ============================================================
+
+; ----- Mayor (slot 6) -----
+
+.setup_mayor:
+    SETUP_ENTITY 6, ENTITY_ASSET_MAYOR, 1
+    SET_ENTITY_ANIMATIONS 6, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.mayor_wait:
+    EXECUTE_SUBROUTINE .setup_mayor
+    SET_COORDINATES -176, 0, -56
+    SET_ASSET_ROTATION 6
+
+.mayor_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .mayor_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.mayor_on_interact:
+    BRANCH_ON_SPECIAL_BIT 0, affectionBumpedBits, .mayor_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_MAYOR]
+    SET_SPECIAL_BIT 0, affectionBumpedBits
+
+.mayor_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 1, flags, .mayor_choose_partner
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,0
+
+.mayor_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .mayor_wait_loop
+
+.mayor_choose_partner:
+    SET_SPECIAL_BIT 2, flags
+    SET_U16_VALUE 0, D_80189824
+    SPAWN_EXECUTOR 37, .poll_during_interact
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .mayor_player_king_prompt
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,1
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gHarvestKing, .mayor_choose_king_harris
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gHarvestKing, .mayor_choose_king_gray
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gHarvestKing, .mayor_choose_king_jeff
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gHarvestKing, .mayor_choose_king_cliff
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gHarvestKing, .mayor_choose_king_kai
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_choose_king_harris:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gSumGirlsWithHighAffection, .mayor_talk_done
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .mayor_harris_g0
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .mayor_harris_g1
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .mayor_harris_g2
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .mayor_harris_g3
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .mayor_harris_g4
+
+.mayor_king_harris_cue:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_WAIT_FRAMES 20
+    SET_OTHER_EXECUTOR_PTR 14, .face_sw_loop
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,94
+    EXECUTE_SUBROUTINE .mayor_player_king_start_dance
+
+.mayor_harris_g0:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_harris_g0_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gSumGirlsWithHighAffection, .mayor_king_harris_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_harris_g0_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .mayor_king_harris_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_harris_g1:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_harris_g1_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gSumGirlsWithHighAffection, .mayor_king_harris_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_harris_g1_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .mayor_king_harris_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_harris_g2:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_harris_g2_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gSumGirlsWithHighAffection, .mayor_king_harris_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_harris_g2_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .mayor_king_harris_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_harris_g3:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_harris_g3_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gSumGirlsWithHighAffection, .mayor_king_harris_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_harris_g3_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .mayor_king_harris_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_harris_g4:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_harris_g4_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gSumGirlsWithHighAffection, .mayor_king_harris_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_harris_g4_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .mayor_king_harris_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_choose_king_gray:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gSumGirlsWithHighAffection, .mayor_talk_done
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .mayor_gray_g0
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .mayor_gray_g1
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .mayor_gray_g2
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .mayor_gray_g3
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .mayor_gray_g4
+
+.mayor_king_gray_cue:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_WAIT_FRAMES 20
+    SET_OTHER_EXECUTOR_PTR 15, .face_sw_loop
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,95
+    EXECUTE_SUBROUTINE .mayor_player_king_start_dance
+
+.mayor_gray_g0:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_gray_g0_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gSumGirlsWithHighAffection, .mayor_king_gray_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_gray_g0_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .mayor_king_gray_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_gray_g1:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_gray_g1_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gSumGirlsWithHighAffection, .mayor_king_gray_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_gray_g1_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .mayor_king_gray_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_gray_g2:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_gray_g2_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gSumGirlsWithHighAffection, .mayor_king_gray_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_gray_g2_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .mayor_king_gray_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_gray_g3:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_gray_g3_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gSumGirlsWithHighAffection, .mayor_king_gray_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_gray_g3_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .mayor_king_gray_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_gray_g4:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_gray_g4_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gSumGirlsWithHighAffection, .mayor_king_gray_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_gray_g4_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .mayor_king_gray_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_choose_king_jeff:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gSumGirlsWithHighAffection, .mayor_talk_done
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .mayor_jeff_g0
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .mayor_jeff_g1
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .mayor_jeff_g2
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .mayor_jeff_g3
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .mayor_jeff_g4
+
+.mayor_king_jeff_cue:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_WAIT_FRAMES 20
+    SET_OTHER_EXECUTOR_PTR 16, .face_sw_loop
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,96
+    EXECUTE_SUBROUTINE .mayor_player_king_start_dance
+
+.mayor_jeff_g0:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_jeff_g0_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gSumGirlsWithHighAffection, .mayor_king_jeff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_jeff_g0_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .mayor_king_jeff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_jeff_g1:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_jeff_g1_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gSumGirlsWithHighAffection, .mayor_king_jeff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_jeff_g1_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .mayor_king_jeff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_jeff_g2:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_jeff_g2_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gSumGirlsWithHighAffection, .mayor_king_jeff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_jeff_g2_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .mayor_king_jeff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_jeff_g3:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_jeff_g3_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gSumGirlsWithHighAffection, .mayor_king_jeff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_jeff_g3_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .mayor_king_jeff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_jeff_g4:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_jeff_g4_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gSumGirlsWithHighAffection, .mayor_king_jeff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_jeff_g4_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .mayor_king_jeff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_choose_king_cliff:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gSumGirlsWithHighAffection, .mayor_talk_done
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .mayor_cliff_g0
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .mayor_cliff_g1
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .mayor_cliff_g2
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .mayor_cliff_g3
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .mayor_cliff_g4
+
+.mayor_king_cliff_cue:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_WAIT_FRAMES 20
+    SET_OTHER_EXECUTOR_PTR 16, .face_sw_loop
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,97
+    EXECUTE_SUBROUTINE .mayor_player_king_start_dance
+
+.mayor_cliff_g0:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_cliff_g0_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gSumGirlsWithHighAffection, .mayor_king_cliff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_cliff_g0_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .mayor_king_cliff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_cliff_g1:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_cliff_g1_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gSumGirlsWithHighAffection, .mayor_king_cliff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_cliff_g1_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .mayor_king_cliff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_cliff_g2:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_cliff_g2_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gSumGirlsWithHighAffection, .mayor_king_cliff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_cliff_g2_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .mayor_king_cliff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_cliff_g3:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_cliff_g3_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gSumGirlsWithHighAffection, .mayor_king_cliff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_cliff_g3_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .mayor_king_cliff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_cliff_g4:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_cliff_g4_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gSumGirlsWithHighAffection, .mayor_king_cliff_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_cliff_g4_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .mayor_king_cliff_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_choose_king_kai:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gSumGirlsWithHighAffection, .mayor_talk_done
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .mayor_kai_g0
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .mayor_kai_g1
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .mayor_kai_g2
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .mayor_kai_g3
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .mayor_kai_g4
+
+.mayor_king_kai_cue:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    SET_WAIT_FRAMES 20
+    SET_OTHER_EXECUTOR_PTR 16, .face_sw_loop
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,98
+    EXECUTE_SUBROUTINE .mayor_player_king_start_dance
+
+.mayor_kai_g0:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_kai_g0_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gSumGirlsWithHighAffection, .mayor_king_kai_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_kai_g0_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .mayor_king_kai_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_kai_g1:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_kai_g1_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gSumGirlsWithHighAffection, .mayor_king_kai_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_kai_g1_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .mayor_king_kai_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_kai_g2:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_kai_g2_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gSumGirlsWithHighAffection, .mayor_king_kai_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_kai_g2_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .mayor_king_kai_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_kai_g3:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_kai_g3_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gSumGirlsWithHighAffection, .mayor_king_kai_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_kai_g3_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .mayor_king_kai_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_kai_g4:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .mayor_kai_g4_wife
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gSumGirlsWithHighAffection, .mayor_king_kai_cue
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+.mayor_kai_g4_wife:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .mayor_king_kai_cue
+    RETURN_FROM_SUBROUTINE
+
+.mayor_player_king_prompt:
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,0
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .mayor_player_king_yes
+    BRANCH_ON_DIALOGUE 0, 1, .mayor_player_king_no
+
+.mayor_player_king_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,4
+
+.mayor_player_king_start_dance:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_dispatch_chosen
+
+.mayor_player_king_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,5
+    EXECUTE_SUBROUTINE .mayor_talk_done
+
+; ----- Lillia (slot 7) -----
+
+.setup_lillia:
+    SETUP_ENTITY 7, ENTITY_ASSET_LILLIA, 1
+    SET_ENTITY_ANIMATIONS 7, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.lillia_wait:
+    EXECUTE_SUBROUTINE .setup_lillia
+    SET_COORDINATES -160, 0, -224
+
+.lillia_wait_loop:
+    SET_ASSET_ROTATION 0
+    SET_CALLBACK_ROUTINE 0, 32768, .lillia_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.lillia_on_interact:
+    BRANCH_ON_SPECIAL_BIT 1, affectionBumpedBits, .lillia_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_LILLIA]
+    SET_SPECIAL_BIT 1, affectionBumpedBits
+
+.lillia_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .lillia_talk_2
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,18
+
+.lillia_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .lillia_wait_loop
+
+.lillia_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,19
+    EXECUTE_SUBROUTINE .lillia_talk_done
+
+; ----- Basil (slot 8) -----
+
+.setup_basil:
+    SETUP_ENTITY 8, ENTITY_ASSET_BASIL, 1
+    SET_ENTITY_ANIMATIONS 8, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.basil_wait:
+    EXECUTE_SUBROUTINE .setup_basil
+    SET_COORDINATES -128, 0, -224
+    SET_ASSET_ROTATION 0
+
+.basil_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .basil_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.basil_on_interact:
+    BRANCH_ON_SPECIAL_BIT 2, affectionBumpedBits, .basil_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_BASIL]
+    SET_SPECIAL_BIT 2, affectionBumpedBits
+
+.basil_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .basil_talk_2
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,20
+
+.basil_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .basil_wait_loop
+
+.basil_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,21
+    EXECUTE_SUBROUTINE .basil_talk_done
+
+; ----- Kent (slot 9) -----
+
+.kent_wait:
+    SETUP_ENTITY 9, ENTITY_ASSET_KENT, 1
+    SET_ENTITY_ANIMATIONS 9, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    SET_COORDINATES -64, 0, -128
+    SET_ASSET_ROTATION 1
+
+.kent_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .kent_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.kent_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,22
+    RETURN_FROM_SUBROUTINE
+
+.kent_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,23
+    RETURN_FROM_SUBROUTINE
+
+.kent_on_interact:
+    BRANCH_ON_SPECIAL_BIT 3, affectionBumpedBits, .kent_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_KENT]
+    SET_SPECIAL_BIT 3, affectionBumpedBits
+
+.kent_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .kent_talk_2
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[NPC_KENT], .kent_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[NPC_KENT], .kent_talk_high
+
+.kent_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .kent_wait_loop
+
+.kent_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,24
+    EXECUTE_SUBROUTINE .kent_talk_done
+
+; ----- Stu (slot 10) -----
+
+.stu_wait:
+    SETUP_ENTITY 10, ENTITY_ASSET_STU, 1
+    SET_ENTITY_ANIMATIONS 10, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    SET_COORDINATES -32, 0, -96
+    SET_ASSET_ROTATION 1
+
+.stu_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .stu_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.stu_on_interact:
+    BRANCH_ON_SPECIAL_BIT 4, affectionBumpedBits, .stu_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_STU]
+    SET_SPECIAL_BIT 4, affectionBumpedBits
+
+.stu_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .stu_talk_2
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,25
+
+.stu_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .stu_wait_loop
+
+.stu_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,26
+    EXECUTE_SUBROUTINE .stu_talk_done
+
+; ----- Potion Shop Dealer (slot 11) -----
+
+.setup_potion_shop_dealer:
+    SETUP_ENTITY 11, ENTITY_ASSET_POTION_SHOP_DEALER, 1
+    SET_ENTITY_ANIMATIONS 11, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.potion_wait:
+    EXECUTE_SUBROUTINE .setup_potion_shop_dealer
+    SET_ASSET_ROTATION 0
+    SET_COORDINATES -64, 0, -256
+
+.potion_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .potion_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.potion_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,15
+    RETURN_FROM_SUBROUTINE
+
+.potion_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,16
+    RETURN_FROM_SUBROUTINE
+
+.potion_on_interact:
+    BRANCH_ON_SPECIAL_BIT 5, affectionBumpedBits, .potion_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_POTION_SHOP_DEALER]
+    SET_SPECIAL_BIT 5, affectionBumpedBits
+
+.potion_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .potion_talk_2
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[NPC_POTION_SHOP_DEALER], .potion_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[NPC_POTION_SHOP_DEALER], .potion_talk_high
+
+.potion_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .potion_wait_loop
+
+.potion_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,17
+    EXECUTE_SUBROUTINE .potion_talk_done
+
+; ----- Rick (slot 12) -----
+
+.rick_wait:
+    SETUP_ENTITY 12, ENTITY_ASSET_RICK, 1
+    SET_ENTITY_ANIMATIONS 12, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    SET_COORDINATES 64, 0, 224
+    SET_ASSET_ROTATION 4
+
+.rick_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .rick_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.rick_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,12
+    RETURN_FROM_SUBROUTINE
+
+.rick_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,13
+    RETURN_FROM_SUBROUTINE
+
+.rick_on_interact:
+    BRANCH_ON_SPECIAL_BIT 6, affectionBumpedBits, .rick_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_RICK]
+    SET_SPECIAL_BIT 6, affectionBumpedBits
+
+.rick_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .rick_talk_2
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[NPC_RICK], .rick_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[NPC_RICK], .rick_talk_high
+
+.rick_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .rick_wait_loop
+
+.rick_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,14
+    EXECUTE_SUBROUTINE .rick_talk_done
+
+; ----- Shady Salesman (slot 13) - sells Power Nut -----
+
+.shady_wait:
+    SETUP_ENTITY 13, ENTITY_ASSET_SHADY_SALESMAN, 1
+    SET_ENTITY_ANIMATIONS 13, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    SET_COORDINATES -288, 0, -160
+    SET_ASSET_ROTATION 6
+
+.shady_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .shady_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.shady_on_interact:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 3, flags, .shady_already_bought
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,9
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .shady_buy_yes
+    BRANCH_ON_DIALOGUE 0, 1, .shady_buy_no
+
+.shady_buy_yes:
+    BRANCH_U32_VAR_WITHIN_RANGE 0, 999, gGold, .shady_not_enough_gold
+    UPDATE_U32_VALUE 4294966296, 999999, gGold
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,102
+    SET_SPECIAL_BIT 3, flags
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    SPAWN_EXECUTOR 0, .player_receive_power_nut
+    EXECUTE_SUBROUTINE .shady_wait_loop
+
+.shady_already_bought:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,102
+    EXECUTE_SUBROUTINE .shady_talk_done
+
+.shady_buy_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,103
+
+.shady_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .shady_wait_loop
+
+.shady_not_enough_gold:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,104
+    EXECUTE_SUBROUTINE .shady_talk_done
+
+.player_receive_power_nut:
+    EXECUTE_SUBROUTINE .setup_player
+    SET_ASSET_ROTATION 0
+    SPAWN_EXECUTOR 32, .power_nut_shine
+    SET_ENTITY_DIRECTIONAL_ANIMATION 24
+    SET_WAIT_FRAMES 30
+    SET_ENTITY_ANIMATION 437
+    WAIT_ENTITY_ANIMATION
+    SET_SPECIAL_BIT 7, acquiredPowerNutBits
+    UPDATE_U8_VALUE 15, 250, gMaximumStamina
+    UPDATE_U8_VALUE 2, 255, gHappiness
+    SET_ENTITY_MAP_SPACE_INDEPENDENT FALSE
+    TOGGLE_PAUSE_ENTITIES
+    CLEAR_SPECIAL_BIT 0, flags
+    DEACTIVATE_SELF
+
+.power_nut_shine:
+    SETUP_ENTITY 28, ENTITY_ASSET_STATIC_ITEM, 1
+    SET_ENTITY_ANIMATIONS 28, 0, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_ANIMATION 210
+    SET_ENTITY_TRACKING_TARGET 0, 0, 14, 20, 255
+    SET_WAIT_FRAMES 30
+    SET_ENTITY_TRACKING_TARGET 0, 0, 32, 16, 255
+    SET_WAIT_FRAMES 10
+    DEACTIVATE_SELF
+
+; ----- Mayor Wife (slot 19) -----
+
+.setup_mayor_wife:
+    SETUP_ENTITY 19, ENTITY_ASSET_MAYOR_WIFE, 1
+    SET_ENTITY_ANIMATIONS 19, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.mayor_wife_wait:
+    EXECUTE_SUBROUTINE .setup_mayor_wife
+    SET_COORDINATES -176, 0, 224
+    SET_ASSET_ROTATION 4
+
+.mayor_wife_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .mayor_wife_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.mayor_wife_on_interact:
+    BRANCH_ON_SPECIAL_BIT 8, affectionBumpedBits, .mayor_wife_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_MAYOR_WIFE]
+    SET_SPECIAL_BIT 8, affectionBumpedBits
+
+.mayor_wife_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .mayor_wife_talk_2
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,7
+    WAIT_FOR_DIALOGUE_INPUT 0
+
+.mayor_wife_talk_done:
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .mayor_wife_wait_loop
+
+.mayor_wife_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,9
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    EXECUTE_SUBROUTINE .mayor_wife_talk_done
+
+; ----- Pastor (slot 20) -----
+
+.pastor_wait:
+    SETUP_ENTITY 20, ENTITY_ASSET_PASTOR, 1
+    SET_ENTITY_ANIMATIONS 20, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    SET_COORDINATES 128, 0, 128
+    SET_ASSET_ROTATION 2
+
+.pastor_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .pastor_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.pastor_on_interact:
+    BRANCH_ON_SPECIAL_BIT 9, affectionBumpedBits, .pastor_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[NPC_PASTOR]
+    SET_SPECIAL_BIT 9, affectionBumpedBits
+
+.pastor_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .pastor_talk_2
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,10
+
+.pastor_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .pastor_wait_loop
+
+.pastor_talk_2:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,11
+    EXECUTE_SUBROUTINE .pastor_talk_done
+
+; ----- Harris (slot 14) -----
+
+.setup_harris:
+    SETUP_ENTITY 14, ENTITY_ASSET_HARRIS, 1
+    SET_ENTITY_ANIMATIONS 14, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.harris_wait:
+    EXECUTE_SUBROUTINE .setup_harris
+    SET_COORDINATES 32, 0, -96
+    SET_ASSET_ROTATION 1
+
+.harris_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .harris_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.harris_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,64
+    RETURN_FROM_SUBROUTINE
+
+.harris_talk_mid:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,65
+    EXECUTE_SUBROUTINE .harris_talk_done
+
+.harris_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,66
+    RETURN_FROM_SUBROUTINE
+
+.harris_on_interact:
+    BRANCH_ON_SPECIAL_BIT 10, affectionBumpedBits, .harris_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[HARRIS]
+    SET_SPECIAL_BIT 10, affectionBumpedBits
+
+.harris_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 26, lifeEventBits[0], .harris_talk_life26
+    BRANCH_ON_SPECIAL_BIT 2, flags, .harris_talk_chosen
+    BRANCH_ON_SPECIAL_BIT 1, flags, .harris_chosen_check
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 59, npcAffection[HARRIS], .harris_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 60, 99, npcAffection[HARRIS], .harris_talk_mid
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .harris_married_check
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[HARRIS], .harris_talk_high
+
+.harris_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .harris_wait_loop
+
+.harris_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .harris_talk_mid
+    RETURN_FROM_SUBROUTINE
+
+.harris_chosen_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .harris_chosen_talk
+    RETURN_FROM_SUBROUTINE
+
+.harris_chosen_talk:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .harris_chosen_wife_check
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,67
+    EXECUTE_SUBROUTINE .harris_talk_done
+
+.harris_chosen_wife_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .harris_chosen_wife_talk
+    RETURN_FROM_SUBROUTINE
+
+.harris_chosen_wife_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,105
+    EXECUTE_SUBROUTINE .harris_talk_done
+
+.harris_talk_life26:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,69
+    EXECUTE_SUBROUTINE .harris_talk_done
+
+.harris_talk_chosen:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,68
+    EXECUTE_SUBROUTINE .harris_talk_done
+
+; ----- Gray (slot 15) -----
+
+.setup_gray:
+    SETUP_ENTITY 15, ENTITY_ASSET_GRAY, 1
+    SET_ENTITY_ANIMATIONS 15, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.gray_wait:
+    EXECUTE_SUBROUTINE .setup_gray
+    SET_COORDINATES 96, 0, -192
+    SET_ASSET_ROTATION 1
+
+.gray_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .gray_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.gray_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,70
+    RETURN_FROM_SUBROUTINE
+
+.gray_talk_mid:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,71
+    EXECUTE_SUBROUTINE .gray_talk_done
+
+.gray_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,72
+    RETURN_FROM_SUBROUTINE
+
+.gray_on_interact:
+    BRANCH_ON_SPECIAL_BIT 11, affectionBumpedBits, .gray_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[GRAY]
+    SET_SPECIAL_BIT 11, affectionBumpedBits
+
+.gray_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 27, lifeEventBits[0], .gray_talk_life27
+    BRANCH_ON_SPECIAL_BIT 2, flags, .gray_talk_chosen
+    BRANCH_ON_SPECIAL_BIT 1, flags, .gray_chosen_check
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 79, npcAffection[GRAY], .gray_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 80, 149, npcAffection[GRAY], .gray_talk_mid
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .gray_married_check
+    BRANCH_U8_VAR_WITHIN_RANGE 150, 255, npcAffection[GRAY], .gray_talk_high
+
+.gray_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .gray_wait_loop
+
+.gray_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .gray_talk_mid
+    RETURN_FROM_SUBROUTINE
+
+.gray_chosen_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .gray_chosen_talk
+    RETURN_FROM_SUBROUTINE
+
+.gray_chosen_talk:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .gray_chosen_wife_check
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,73
+    EXECUTE_SUBROUTINE .gray_talk_done
+
+.gray_chosen_wife_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .gray_chosen_wife_talk
+    RETURN_FROM_SUBROUTINE
+
+.gray_chosen_wife_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,106
+    EXECUTE_SUBROUTINE .gray_talk_done
+
+.gray_talk_life27:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,75
+    EXECUTE_SUBROUTINE .gray_talk_done
+
+.gray_talk_chosen:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,74
+    EXECUTE_SUBROUTINE .gray_talk_done
+
+; ----- Jeff (slot 16) -----
+
+.setup_jeff:
+    SETUP_ENTITY 16, ENTITY_ASSET_JEFF, 1
+    SET_ENTITY_ANIMATIONS 16, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.jeff_wait:
+    EXECUTE_SUBROUTINE .setup_jeff
+    SET_COORDINATES -32, 0, -192
+    SET_ASSET_ROTATION 0
+
+.jeff_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .jeff_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.jeff_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,76
+    RETURN_FROM_SUBROUTINE
+
+.jeff_talk_mid:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,77
+    EXECUTE_SUBROUTINE .jeff_talk_done
+
+.jeff_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,78
+    RETURN_FROM_SUBROUTINE
+
+.jeff_on_interact:
+    BRANCH_ON_SPECIAL_BIT 12, affectionBumpedBits, .jeff_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[JEFF]
+    SET_SPECIAL_BIT 12, affectionBumpedBits
+
+.jeff_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 28, lifeEventBits[0], .jeff_talk_life28
+    BRANCH_ON_SPECIAL_BIT 2, flags, .jeff_talk_chosen
+    BRANCH_ON_SPECIAL_BIT 1, flags, .jeff_chosen_check
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 59, npcAffection[JEFF], .jeff_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 60, 99, npcAffection[JEFF], .jeff_talk_mid
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .jeff_married_check
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[JEFF], .jeff_talk_high
+
+.jeff_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .jeff_wait_loop
+
+.jeff_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .jeff_talk_mid
+    RETURN_FROM_SUBROUTINE
+
+.jeff_chosen_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .jeff_chosen_talk
+    RETURN_FROM_SUBROUTINE
+
+.jeff_chosen_talk:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .jeff_chosen_wife_check
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,79
+    EXECUTE_SUBROUTINE .jeff_talk_done
+
+.jeff_chosen_wife_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .jeff_chosen_wife_talk
+    RETURN_FROM_SUBROUTINE
+
+.jeff_chosen_wife_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,107
+    EXECUTE_SUBROUTINE .jeff_talk_done
+
+.jeff_talk_life28:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,81
+    EXECUTE_SUBROUTINE .jeff_talk_done
+
+.jeff_talk_chosen:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,80
+    EXECUTE_SUBROUTINE .jeff_talk_done
+
+; ----- Cliff (slot 17) -----
+
+.setup_cliff:
+    SETUP_ENTITY 17, ENTITY_ASSET_CLIFF, 1
+    SET_ENTITY_ANIMATIONS 17, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.cliff_wait:
+    EXECUTE_SUBROUTINE .setup_cliff
+    SET_COORDINATES -32, 0, 224
+    SET_ASSET_ROTATION 3
+
+.cliff_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .cliff_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.cliff_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,82
+    RETURN_FROM_SUBROUTINE
+
+.cliff_talk_mid:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,83
+    EXECUTE_SUBROUTINE .cliff_talk_done
+
+.cliff_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,84
+    RETURN_FROM_SUBROUTINE
+
+.cliff_on_interact:
+    BRANCH_ON_SPECIAL_BIT 13, affectionBumpedBits, .cliff_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[CLIFF]
+    SET_SPECIAL_BIT 13, affectionBumpedBits
+
+.cliff_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 29, lifeEventBits[0], .cliff_talk_chosen
+    BRANCH_ON_SPECIAL_BIT 2, flags, .cliff_talk_life29
+    BRANCH_ON_SPECIAL_BIT 1, flags, .cliff_chosen_check
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 79, npcAffection[CLIFF], .cliff_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 80, 149, npcAffection[CLIFF], .cliff_talk_mid
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .cliff_married_check
+    BRANCH_U8_VAR_WITHIN_RANGE 150, 255, npcAffection[CLIFF], .cliff_talk_high
+
+.cliff_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .cliff_wait_loop
+
+.cliff_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .cliff_talk_mid
+    RETURN_FROM_SUBROUTINE
+
+.cliff_chosen_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .cliff_chosen_talk
+    RETURN_FROM_SUBROUTINE
+
+.cliff_chosen_talk:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .cliff_chosen_wife_check
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,85
+    EXECUTE_SUBROUTINE .cliff_talk_done
+
+.cliff_chosen_wife_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .cliff_chosen_wife_talk
+    RETURN_FROM_SUBROUTINE
+
+.cliff_chosen_wife_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,108
+    EXECUTE_SUBROUTINE .cliff_talk_done
+
+.cliff_talk_life29:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,86
+    EXECUTE_SUBROUTINE .cliff_talk_done
+
+.cliff_talk_chosen:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,87
+    EXECUTE_SUBROUTINE .cliff_talk_done
+
+; ----- Kai (slot 18) -----
+
+.setup_kai:
+    SETUP_ENTITY 18, ENTITY_ASSET_KAI, 1
+    SET_ENTITY_ANIMATIONS 18, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.kai_wait:
+    EXECUTE_SUBROUTINE .setup_kai
+    SET_COORDINATES 128, 0, -64
+    SET_ASSET_ROTATION 1
+
+.kai_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .kai_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.kai_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,88
+    RETURN_FROM_SUBROUTINE
+
+.kai_talk_mid:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,89
+    EXECUTE_SUBROUTINE .kai_talk_done
+
+.kai_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,90
+    RETURN_FROM_SUBROUTINE
+
+.kai_on_interact:
+    BRANCH_ON_SPECIAL_BIT 14, affectionBumpedBits, .kai_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[KAI]
+    SET_SPECIAL_BIT 14, affectionBumpedBits
+
+.kai_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 30, lifeEventBits[0], .kai_talk_chosen
+    BRANCH_ON_SPECIAL_BIT 2, flags, .kai_talk_life30
+    BRANCH_ON_SPECIAL_BIT 1, flags, .kai_chosen_check
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 79, npcAffection[KAI], .kai_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 80, 149, npcAffection[KAI], .kai_talk_mid
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .kai_married_check
+    BRANCH_U8_VAR_WITHIN_RANGE 150, 255, npcAffection[KAI], .kai_talk_high
+
+.kai_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .kai_wait_loop
+
+.kai_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .kai_talk_mid
+    RETURN_FROM_SUBROUTINE
+
+.kai_chosen_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .kai_chosen_talk
+    RETURN_FROM_SUBROUTINE
+
+.kai_chosen_talk:
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .kai_chosen_wife_check
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,91
+    EXECUTE_SUBROUTINE .kai_talk_done
+
+.kai_chosen_wife_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .kai_chosen_wife_talk
+    RETURN_FROM_SUBROUTINE
+
+.kai_chosen_wife_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,109
+    EXECUTE_SUBROUTINE .kai_talk_done
+
+.kai_talk_life30:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,92
+    EXECUTE_SUBROUTINE .kai_talk_done
+
+.kai_talk_chosen:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,93
+    EXECUTE_SUBROUTINE .kai_talk_done
+
+; ============================================================
+; CHOSEN-GIRL EXECUTORS - each bachelorette has:
+;   _entry_walk    - helper: walk from spawn to square center
+;   _enter         - executor: entered but not chosen
+;   _after_dance   - executor: post-dance idle + chat
+;   plus the full _wait / _talk / _chosen_confirm dialogue tree
+; ============================================================
+
+; ----- Maria (slot 1) -----
+
+.maria_entry_walk:
+    SET_COORDINATES -288, 0, 96
+    SET_ASSET_ROTATION 6
+    ENTITY_WALK 32, DIRECTION_E, 2
+    ENTITY_WALK 24, DIRECTION_SE, 2
+    SET_ASSET_ROTATION 4
+    RETURN_FROM_SUBROUTINE
+
+.maria_enter:
+    SETUP_ENTITY 1, ENTITY_ASSET_MARIA, 1
+    SET_ENTITY_ANIMATIONS 1, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    EXECUTE_SUBROUTINE .maria_entry_walk
+    SET_ENTITY_ANIMATION 72
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 27, .balloon_spr_27
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 28, .balloon_spr_28
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .maria_wait_loop
+
+.setup_maria_after_dance:
+    SETUP_ENTITY 1, ENTITY_ASSET_MARIA, 1
+    SET_ENTITY_ANIMATIONS 1, 73, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.maria_after_dance:
+    EXECUTE_SUBROUTINE .setup_maria_after_dance
+    SET_ASSET_ROTATION 6
+    SET_COORDINATES -288, 0, 80
+    SET_ENTITY_ANIMATION 81
+    SET_FRAME_DELTA 2, 0, 0, 128
+    SET_ENTITY_ANIMATION 89
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 90
+    SET_WAIT_FRAMES 30
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    SET_COORDINATES -176, 0, -24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 73
+    SET_ASSET_ROTATION 6
+    SET_OTHER_EXECUTOR_PTR 0, .player_post_intro_walk
+
+.maria_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .maria_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.maria_on_interact:
+    BRANCH_ON_SPECIAL_BIT 15, affectionBumpedBits, .maria_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection
+    SET_SPECIAL_BIT 15, affectionBumpedBits
+
+.maria_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .maria_chosen_confirm
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .maria_chosen_check
+    SET_ENTITY_DIRECTIONAL_ANIMATION 16
+    WAIT_ENTITY_ANIMATION
+    SPAWN_EXECUTOR 36, .track_girl1
+    SET_WAIT_FRAMES 20
+    SPAWN_EXECUTOR 0, .player_bow_to_girl
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_WAIT_FRAMES 20
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .maria_married_check
+    BRANCH_ON_SPECIAL_BIT 26, lifeEventBits[0], .maria_life26_talk
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection, .maria_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection, .maria_talk_high
+
+.maria_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .maria_wait_loop
+
+.maria_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gWife, .maria_wife_reunion
+    RETURN_FROM_SUBROUTINE
+
+.maria_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,27
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,28
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_chosen_check:
+    BRANCH_ON_SPECIAL_BIT 26, lifeEventBits[0], .maria_life26_talk
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,6
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .maria_prompt_yes
+    BRANCH_ON_DIALOGUE 0, 1, .maria_prompt_no
+
+.maria_prompt_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,31
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_prompt_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,32
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_wife_reunion:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,33
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_life26_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,34
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_chosen_confirm:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .maria_king_variant
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 1, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 0, -64, 256
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,110
+    WAIT_MESSAGE_BOX_CLOSED 0
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,1
+    WAIT_FOR_DIALOGUE_INPUT 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 256
+    BRANCH_ON_DIALOGUE 0, 0, .maria_chosen_confirm_yes
+    BRANCH_ON_DIALOGUE 0, 1, .maria_chosen_confirm_no
+
+.maria_chosen_confirm_yes:
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_sequence_maria
+
+.maria_chosen_confirm_no:
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .maria_wait_loop
+
+.maria_king_variant:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .maria_king_player_variant
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,99
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+.maria_king_player_variant:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,100
+    EXECUTE_SUBROUTINE .maria_talk_done
+
+; ----- Popuri (slot 2) -----
+
+.popuri_entry_walk:
+    SET_COORDINATES -288, 0, 64
+    SET_ASSET_ROTATION 6
+    ENTITY_WALK 48, DIRECTION_E, 2
+    ENTITY_WALK 24, DIRECTION_NE, 2
+    SET_ASSET_ROTATION 0
+    RETURN_FROM_SUBROUTINE
+
+.popuri_enter:
+    SETUP_ENTITY 2, ENTITY_ASSET_POPURI, 1
+    SET_ENTITY_ANIMATIONS 2, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    EXECUTE_SUBROUTINE .popuri_entry_walk
+    SET_ENTITY_ANIMATION 78
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 25, .balloon_spr_25
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 26, .balloon_spr_26
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .popuri_wait_loop
+
+.setup_popuri_after_dance:
+    SETUP_ENTITY 2, ENTITY_ASSET_POPURI, 1
+    SET_ENTITY_ANIMATIONS 2, 79, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.popuri_after_dance:
+    EXECUTE_SUBROUTINE .setup_popuri_after_dance
+    SET_ASSET_ROTATION 6
+    SET_COORDINATES -288, 0, 80
+    SET_ENTITY_ANIMATION 87
+    SET_FRAME_DELTA 2, 0, 0, 128
+    SET_ENTITY_ANIMATION 95
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 96
+    SET_WAIT_FRAMES 30
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    SET_COORDINATES -176, 0, -24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 79
+    SET_ASSET_ROTATION 6
+    SET_OTHER_EXECUTOR_PTR 0, .player_post_intro_walk
+
+.popuri_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .popuri_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.popuri_on_interact:
+    BRANCH_ON_SPECIAL_BIT 16, affectionBumpedBits, .popuri_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[POPURI]
+    SET_SPECIAL_BIT 16, affectionBumpedBits
+
+.popuri_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .popuri_chosen_confirm
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .popuri_chosen_check
+    SET_ENTITY_DIRECTIONAL_ANIMATION 16
+    WAIT_ENTITY_ANIMATION
+    SPAWN_EXECUTOR 36, .track_girl2
+    SET_WAIT_FRAMES 20
+    SPAWN_EXECUTOR 0, .player_bow_to_girl
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_WAIT_FRAMES 20
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .popuri_married_check
+    BRANCH_ON_SPECIAL_BIT 27, lifeEventBits[0], .popuri_life27_talk
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[POPURI], .popuri_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[POPURI], .popuri_talk_high
+
+.popuri_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .popuri_wait_loop
+
+.popuri_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gWife, .popuri_wife_reunion
+    RETURN_FROM_SUBROUTINE
+
+.popuri_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,35
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,36
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_chosen_check:
+    BRANCH_ON_SPECIAL_BIT 27, lifeEventBits[0], .popuri_life27_talk
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,5
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .popuri_prompt_yes
+    BRANCH_ON_DIALOGUE 0, 1, .popuri_prompt_no
+
+.popuri_prompt_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,39
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_prompt_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,120
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_wife_reunion:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,40
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_life27_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,40
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_chosen_confirm:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .popuri_king_variant
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 1, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 0, -64, 256
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,110
+    WAIT_MESSAGE_BOX_CLOSED 0
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,1
+    WAIT_FOR_DIALOGUE_INPUT 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 256
+    BRANCH_ON_DIALOGUE 0, 0, .popuri_chosen_confirm_yes
+    BRANCH_ON_DIALOGUE 0, 1, .popuri_chosen_confirm_no
+
+.popuri_chosen_confirm_yes:
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_sequence_popuri
+
+.popuri_chosen_confirm_no:
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .popuri_wait_loop
+
+.popuri_king_variant:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .popuri_king_player_variant
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,112
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+.popuri_king_player_variant:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,113
+    EXECUTE_SUBROUTINE .popuri_talk_done
+
+; ----- Elli (slot 3) -----
+
+.elli_entry_walk:
+    SET_COORDINATES -288, 0, 96
+    SET_ASSET_ROTATION 6
+    ENTITY_WALK 80, DIRECTION_E, 2
+    ENTITY_WALK 24, DIRECTION_SE, 2
+    SET_ASSET_ROTATION 4
+    RETURN_FROM_SUBROUTINE
+
+.elli_enter:
+    SETUP_ENTITY 3, ENTITY_ASSET_ELLI, 1
+    SET_ENTITY_ANIMATIONS 3, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    EXECUTE_SUBROUTINE .elli_entry_walk
+    SET_ENTITY_ANIMATION 68
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 23, .balloon_spr_23
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 24, .balloon_spr_24
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .elli_wait_loop
+
+.setup_elli_after_dance:
+    SETUP_ENTITY 3, ENTITY_ASSET_ELLI, 1
+    SET_ENTITY_ANIMATIONS 3, 69, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.elli_after_dance:
+    EXECUTE_SUBROUTINE .setup_elli_after_dance
+    SET_ASSET_ROTATION 6
+    SET_COORDINATES -288, 0, 80
+    SET_ENTITY_ANIMATION 77
+    SET_FRAME_DELTA 2, 0, 0, 128
+    SET_ENTITY_ANIMATION 85
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 86
+    SET_WAIT_FRAMES 30
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    SET_COORDINATES -176, 0, -24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 69
+    SET_ASSET_ROTATION 6
+    SET_OTHER_EXECUTOR_PTR 0, .player_post_intro_walk
+
+.elli_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .elli_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.elli_on_interact:
+    BRANCH_ON_SPECIAL_BIT 17, affectionBumpedBits, .elli_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[ELLI]
+    SET_SPECIAL_BIT 17, affectionBumpedBits
+
+.elli_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .elli_chosen_confirm
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .elli_chosen_check
+    SET_ENTITY_DIRECTIONAL_ANIMATION 16
+    WAIT_ENTITY_ANIMATION
+    SPAWN_EXECUTOR 36, .track_girl3
+    SET_WAIT_FRAMES 20
+    SPAWN_EXECUTOR 0, .player_bow_to_girl
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_WAIT_FRAMES 20
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .elli_married_check
+    BRANCH_ON_SPECIAL_BIT 28, lifeEventBits[0], .elli_life28_talk
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[ELLI], .elli_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[ELLI], .elli_talk_high
+
+.elli_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .elli_wait_loop
+
+.elli_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gWife, .elli_wife_reunion
+    RETURN_FROM_SUBROUTINE
+
+.elli_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,41
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,42
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_chosen_check:
+    BRANCH_ON_SPECIAL_BIT 28, lifeEventBits[0], .elli_life28_talk
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,4
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .elli_prompt_yes
+    BRANCH_ON_DIALOGUE 0, 1, .elli_prompt_no
+
+.elli_prompt_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,45
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_prompt_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,46
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_wife_reunion:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,47
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_life28_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,48
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_chosen_confirm:
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .elli_king_variant
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 1, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 0, -64, 256
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,110
+    WAIT_MESSAGE_BOX_CLOSED 0
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,1
+    WAIT_FOR_DIALOGUE_INPUT 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 256
+    BRANCH_ON_DIALOGUE 0, 0, .elli_chosen_confirm_yes
+    BRANCH_ON_DIALOGUE 0, 1, .elli_chosen_confirm_no
+
+.elli_chosen_confirm_yes:
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_sequence_elli
+
+.elli_chosen_confirm_no:
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .elli_wait_loop
+
+.elli_king_variant:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .elli_king_player_variant
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,114
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+.elli_king_player_variant:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,115
+    EXECUTE_SUBROUTINE .elli_talk_done
+
+; ----- Ann (slot 4) -----
+
+.ann_entry_walk:
+    SET_COORDINATES -288, 0, 64
+    SET_ASSET_ROTATION 6
+    ENTITY_WALK 96, DIRECTION_E, 2
+    ENTITY_WALK 24, DIRECTION_NE, 2
+    SET_ASSET_ROTATION 0
+    RETURN_FROM_SUBROUTINE
+
+.ann_enter:
+    SETUP_ENTITY 4, ENTITY_ASSET_ANN, 1
+    SET_ENTITY_ANIMATIONS 4, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    EXECUTE_SUBROUTINE .ann_entry_walk
+    SET_ENTITY_ANIMATION 73
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 21, .balloon_spr_21
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 22, .balloon_spr_22
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .ann_wait_loop
+
+.setup_ann_after_dance:
+    SETUP_ENTITY 4, ENTITY_ASSET_ANN, 1
+    SET_ENTITY_ANIMATIONS 4, 74, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.ann_after_dance:
+    EXECUTE_SUBROUTINE .setup_ann_after_dance
+    SET_ASSET_ROTATION 6
+    SET_COORDINATES -288, 0, 80
+    SET_ENTITY_ANIMATION 82
+    SET_FRAME_DELTA 2, 0, 0, 128
+    SET_ENTITY_ANIMATION 90
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 91
+    SET_WAIT_FRAMES 30
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    SET_COORDINATES -176, 0, -24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 74
+    SET_ASSET_ROTATION 6
+    SET_OTHER_EXECUTOR_PTR 0, .player_post_intro_walk
+
+.ann_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .ann_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.ann_on_interact:
+    BRANCH_ON_SPECIAL_BIT 18, affectionBumpedBits, .ann_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[ANN]
+    SET_SPECIAL_BIT 18, affectionBumpedBits
+
+.ann_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .ann_chosen_confirm
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .ann_chosen_check
+    SET_ENTITY_DIRECTIONAL_ANIMATION 16
+    WAIT_ENTITY_ANIMATION
+    SPAWN_EXECUTOR 36, .track_girl4
+    SET_WAIT_FRAMES 20
+    SPAWN_EXECUTOR 0, .player_bow_to_girl
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_WAIT_FRAMES 20
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .ann_married_check
+    BRANCH_ON_SPECIAL_BIT 29, lifeEventBits[0], .ann_life29_talk
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 99, npcAffection[ANN], .ann_talk_low
+    BRANCH_U8_VAR_WITHIN_RANGE 100, 255, npcAffection[ANN], .ann_talk_high
+
+.ann_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .ann_wait_loop
+
+.ann_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gWife, .ann_wife_reunion
+    RETURN_FROM_SUBROUTINE
+
+.ann_talk_low:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,49
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_talk_high:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,50
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_chosen_check:
+    BRANCH_ON_SPECIAL_BIT 29, lifeEventBits[0], .ann_life29_talk
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,3
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .ann_prompt_yes
+    BRANCH_ON_DIALOGUE 0, 1, .ann_prompt_no
+
+.ann_prompt_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,53
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_prompt_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,54
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_wife_reunion:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,55
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_life29_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,56
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_chosen_confirm:
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .ann_king_variant
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 1, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 0, -64, 256
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,110
+    WAIT_MESSAGE_BOX_CLOSED 0
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,1
+    WAIT_FOR_DIALOGUE_INPUT 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 256
+    BRANCH_ON_DIALOGUE 0, 0, .ann_chosen_confirm_yes
+    BRANCH_ON_DIALOGUE 0, 1, .ann_chosen_confirm_no
+
+.ann_chosen_confirm_yes:
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_sequence_ann
+
+.ann_chosen_confirm_no:
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .ann_wait_loop
+
+.ann_king_variant:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .ann_king_player_variant
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,116
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+.ann_king_player_variant:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,117
+    EXECUTE_SUBROUTINE .ann_talk_done
+
+; ----- Karen (slot 5) - variants share one entry executor with different buddy anims -----
+
+.setup_karen:
+    SETUP_ENTITY 5, ENTITY_ASSET_KAREN, 1
+    SET_ENTITY_ANIMATIONS 5, 0, 8, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.karen_enter_with_maria:
+    EXECUTE_SUBROUTINE .setup_karen
+    EXECUTE_SUBROUTINE .ann_entry_walk
+    SET_ENTITY_ANIMATION 76
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 21, .balloon_spr_21
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 22, .balloon_spr_22
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.karen_enter_with_elli:
+    EXECUTE_SUBROUTINE .setup_karen
+    EXECUTE_SUBROUTINE .elli_entry_walk
+    SET_ENTITY_ANIMATION 77
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 23, .balloon_spr_23
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 24, .balloon_spr_24
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.karen_enter_with_popuri:
+    EXECUTE_SUBROUTINE .setup_karen
+    EXECUTE_SUBROUTINE .popuri_entry_walk
+    SET_ENTITY_ANIMATION 76
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 25, .balloon_spr_25
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 26, .balloon_spr_26
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.karen_enter_with_ann:
+    EXECUTE_SUBROUTINE .setup_karen
+    EXECUTE_SUBROUTINE .maria_entry_walk
+    SET_ENTITY_ANIMATION 77
+    SET_WAIT_FRAMES 13
+    SPAWN_EXECUTOR 27, .balloon_spr_27
+    SET_WAIT_FRAMES 19
+    SPAWN_EXECUTOR 28, .balloon_spr_28
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.setup_karen_after_dance:
+    SETUP_ENTITY 5, ENTITY_ASSET_KAREN, 1
+    SET_ENTITY_ANIMATIONS 5, 78, 0, 0, 0, 0, 0
+    SET_BEHAVIOR_FLAGS 0
+    SET_ENTITY_NON_COLLIDABLE
+    RETURN_FROM_SUBROUTINE
+
+.karen_after_dance:
+    EXECUTE_SUBROUTINE .setup_karen_after_dance
+    SET_ASSET_ROTATION 6
+    SET_COORDINATES -288, 0, 80
+    SET_ENTITY_ANIMATION 86
+    SET_FRAME_DELTA 2, 0, 0, 128
+    SET_ENTITY_ANIMATION 92
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 93
+    SET_WAIT_FRAMES 30
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    SET_COORDINATES -176, 0, -24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 78
+    SET_ASSET_ROTATION 6
+    SET_OTHER_EXECUTOR_PTR 0, .player_post_intro_walk
+
+.karen_wait_loop:
+    SET_CALLBACK_ROUTINE 0, 32768, .karen_on_interact
+    EXECUTE_SUBROUTINE .wait_loop
+
+.karen_on_interact:
+    BRANCH_ON_SPECIAL_BIT 19, affectionBumpedBits, .karen_talk
+    UPDATE_U8_VALUE 2, 255, npcAffection[KAREN]
+    SET_SPECIAL_BIT 19, affectionBumpedBits
+
+.karen_talk:
+    EXECUTE_SUBROUTINE .setup_message_box
+    SET_SPECIAL_BIT 0, flags
+    PAUSE_ENTITY 0
+    FLIP_ENTITY_DIRECTION 0
+    BRANCH_ON_SPECIAL_BIT 2, flags, .karen_chosen_confirm
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .karen_chosen_check
+    SET_ENTITY_DIRECTIONAL_ANIMATION 16
+    WAIT_ENTITY_ANIMATION
+    SPAWN_EXECUTOR 36, .track_girl5
+    SET_WAIT_FRAMES 20
+    SPAWN_EXECUTOR 0, .player_bow_to_girl
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_WAIT_FRAMES 20
+    BRANCH_ON_SPECIAL_BIT MARRIED, lifeEventBits[0], .karen_married_check
+    BRANCH_ON_SPECIAL_BIT 30, lifeEventBits[0], .karen_life30_talk
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,57
+
+.karen_talk_done:
+    WAIT_MESSAGE_BOX_CLOSED 0
+    RESET_MESSAGE_BOX_AVATAR 0
+    TOGGLE_PAUSE_ENTITY 0
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.karen_married_check:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gWife, .karen_wife_reunion
+    RETURN_FROM_SUBROUTINE
+
+.karen_chosen_check:
+    BRANCH_ON_SPECIAL_BIT 30, lifeEventBits[0], .karen_life30_talk
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,2
+    WAIT_FOR_DIALOGUE_INPUT 0
+    BRANCH_ON_DIALOGUE 0, 0, .karen_prompt_yes
+    BRANCH_ON_DIALOGUE 0, 1, .karen_prompt_no
+
+.karen_prompt_yes:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,60
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+.karen_prompt_no:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,61
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+.karen_wife_reunion:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,62
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+.karen_life30_talk:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,63
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+.karen_chosen_confirm:
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .karen_king_variant
+    SET_MESSAGE_INTERPOLATION -4, 0, 0
+    SET_MESSAGE_BOX_ASSETS 0, 1, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 0, -64, 256
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,110
+    WAIT_MESSAGE_BOX_CLOSED 0
+    INIT_DIALOGUE_SESSION 0, DIALOGUE_TEXT_49,1
+    WAIT_FOR_DIALOGUE_INPUT 0
+    SET_MESSAGE_BOX_ASSETS 0, 0, 0, 0
+    SET_MESSAGE_BOX_VIEW_POSITION 0, 24, -64, 256
+    BRANCH_ON_DIALOGUE 0, 0, .karen_chosen_confirm_yes
+    BRANCH_ON_DIALOGUE 0, 1, .karen_chosen_confirm_no
+
+.karen_chosen_confirm_yes:
+    DEACTIVATE_EXECUTOR 37
+    CLEAR_SPECIAL_BIT 0, flags
+    EXECUTE_SUBROUTINE .dance_sequence_karen
+
+.karen_chosen_confirm_no:
+    TOGGLE_PAUSE_ENTITY 0
+    EXECUTE_SUBROUTINE .karen_wait_loop
+
+.karen_king_variant:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .karen_king_player_variant
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,118
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+.karen_king_player_variant:
+    INIT_MESSAGE_BOX_TYPE1 0, FLOWER_FESTIVAL_TEXT_INDEX,119
+    EXECUTE_SUBROUTINE .karen_talk_done
+
+; ============================================================
+; BALLOON SPRITES (slots 21..28) - static festival balloon sprites
+; spawned after each girl entry walk
+; ============================================================
+
+.balloon_spr_21:
+    DMA_SPRITE 161, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES 32, 16, 32
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_22:
+    DMA_SPRITE 162, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES 32, 16, 32
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_23:
+    DMA_SPRITE 163, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -32, -16, 16
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_24:
+    DMA_SPRITE 164, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -32, -16, 16
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_25:
+    DMA_SPRITE 165, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -56, 48, 32
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_26:
+    DMA_SPRITE 166, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -56, 48, 32
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_27:
+    DMA_SPRITE 167, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -80, 32, 16
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_spr_28:
+    DMA_SPRITE 168, 0, _balloonsTextureSegmentRomStart, _balloonsTextureSegmentRomEnd, _balloonsAssetsIndexSegmentRomStart, _balloonsAssetsIndexSegmentRomEnd, 0, 0, ENTITY_REGION_SMALL_SPRITE_BASE, 0, ENTITY_SLOT_FESTIVAL_44_TEXTURE_1, 0x802CEC50, 0x802CF150, 0x802CF250
+    SET_ANIM_DATA_PTR_WITH_FLAG .balloon_anim
+    SET_COORDINATES -80, 32, 16
+    SET_RGBA 255, 255, 255, 255
+    EXECUTE_SUBROUTINE .wait_loop
+
+.balloon_anim:
+    .anim_frame 0, 0xFF, (0, 0, 0), 255, 0
+    .anim_end
+
+; ============================================================
+; DANCE PHASE - after chosen girl prompt, villagers gather,
+; chosen girl performs dance loop, other NPCs do background
+; animations, player follows along
+; ============================================================
+
+.dance_map_origin:
+    SET_COORDINATES -32, 96, -32
+    EXECUTE_SUBROUTINE .wait_loop
+
+.player_dance_spawn:
+    EXECUTE_SUBROUTINE .setup_player
+    SET_BEHAVIOR_FLAGS 0
+    SET_COORDINATES -16, 0, 64
+    SET_ASSET_ROTATION 4
+    EXECUTE_SUBROUTINE .wait_loop
+    EXECUTE_SUBROUTINE .setup_player
+    SET_BEHAVIOR_FLAGS 0
+    SET_COORDINATES -128, 0, 0
+    SET_ASSET_ROTATION 4
+    EXECUTE_SUBROUTINE .wait_loop
+
+.deactivate_npc_slots:
+    DEACTIVATE_EXECUTOR 6
+    DEACTIVATE_EXECUTOR 7
+    DEACTIVATE_EXECUTOR 8
+    DEACTIVATE_EXECUTOR 9
+    DEACTIVATE_EXECUTOR 10
+    DEACTIVATE_EXECUTOR 11
+    DEACTIVATE_EXECUTOR 12
+    DEACTIVATE_EXECUTOR 13
+    DEACTIVATE_EXECUTOR 14
+    DEACTIVATE_EXECUTOR 15
+    DEACTIVATE_EXECUTOR 16
+    DEACTIVATE_EXECUTOR 17
+    DEACTIVATE_EXECUTOR 18
+    DEACTIVATE_EXECUTOR 19
+    DEACTIVATE_EXECUTOR 20
+    STOP_SEQUENCE_WITH_FADE 0, 1
+    SET_WAIT_FRAMES 1
+    IDLE_WHILE_SEQUENCE_PLAYING 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_bachelor_dispatch:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gHarvestKing, .setup_harris
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gHarvestKing, .setup_gray
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gHarvestKing, .setup_jeff
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gHarvestKing, .setup_cliff
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gHarvestKing, .setup_kai
+    BRANCH_U8_VAR_WITHIN_RANGE 6, 6, gHarvestKing, .setup_potion_shop_dealer
+    SET_COORDINATES -128, 0, 0
+    SET_ASSET_ROTATION 4
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_goddess_dispatch:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .setup_maria_after_dance
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .setup_popuri_after_dance
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .setup_elli_after_dance
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .setup_ann_after_dance
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .setup_karen_after_dance
+    SET_COORDINATES -128, 0, -32
+    SET_ASSET_ROTATION 0
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_mayor_pos:
+    EXECUTE_SUBROUTINE .setup_mayor
+    SET_COORDINATES 64, 0, -16
+    SET_ASSET_ROTATION 4
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_lillia_pos:
+    EXECUTE_SUBROUTINE .setup_mayor_wife
+    SET_COORDINATES 64, 0, -48
+    SET_ASSET_ROTATION 0
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_basil_pos:
+    EXECUTE_SUBROUTINE .setup_basil
+    SET_COORDINATES -128, 0, 0
+    SET_ASSET_ROTATION 4
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_lillia_pos_alt:
+    EXECUTE_SUBROUTINE .setup_lillia
+    SET_COORDINATES -128, 0, -32
+    SET_ASSET_ROTATION 0
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_music_start:
+    SET_WAIT_FRAMES 20
+    SET_AUDIO_SEQUENCE 0, _festivalDanceSegmentRomStart, _festivalDanceSegmentRomEnd
+    SET_AUDIO_SEQUENCE_VOLUME 0, 128, 128
+    SET_OTHER_EXECUTOR_PTR 0, .dance_player_loop
+    SET_WAIT_FRAMES 1
+    SPAWN_EXECUTOR 33, .dance_end_fadeout
+    RETURN_FROM_SUBROUTINE
+
+.dance_dispatch_chosen:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .dance_maria
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .dance_popuri
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .dance_elli
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .dance_ann
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .dance_karen
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_maria:
+    SET_OTHER_EXECUTOR_PTR 1, .dance_sequence_maria
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_popuri:
+    SET_OTHER_EXECUTOR_PTR 2, .dance_sequence_popuri
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_elli:
+    SET_OTHER_EXECUTOR_PTR 3, .dance_sequence_elli
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_ann:
+    SET_OTHER_EXECUTOR_PTR 4, .dance_sequence_ann
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_karen:
+    SET_OTHER_EXECUTOR_PTR 5, .dance_sequence_karen
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_bachelor_wait:
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gHarvestKing, .dance_harris_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gHarvestKing, .dance_gray_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gHarvestKing, .dance_jeff_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gHarvestKing, .dance_cliff_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 5, 5, gHarvestKing, .dance_kai_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 6, 6, gHarvestKing, .dance_potion_loop
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_goddess_partner_wait:
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .dance_goddess_body
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .dance_goddess_popuri_body
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .dance_goddess_elli_body
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .dance_goddess_ann_body
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .dance_goddess_karen_body
+    EXECUTE_SUBROUTINE .wait_loop
+
+.dance_spawn_npcs_main:
+    SPAWN_EXECUTOR 6, .dance_bachelor_dispatch
+    SPAWN_EXECUTOR 7, .dance_goddess_dispatch
+    SPAWN_EXECUTOR 8, .dance_mayor_pos
+    SPAWN_EXECUTOR 9, .dance_lillia_pos
+    TOGGLE_PAUSE_ENTITY 0
+    SPAWN_EXECUTOR 0, .player_dance_spawn
+    SET_WAIT_FRAMES 1
+    SET_OTHER_EXECUTOR_PTR 38, .dance_map_origin
+    SET_COORDINATES -16, 0, 32
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 1
+    UPDATE_GLOBAL_RGBA 255, 255, 255, 255, 8
+    WAIT_RGBA_FINISHED
+    RETURN_FROM_SUBROUTINE
+
+; ----- Dance sequence: chosen Maria -----
+
+.dance_sequence_maria:
+    UPDATE_U8_VALUE 10, 255, npcAffection[MARIA]
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 4
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    DEACTIVATE_EXECUTOR 2
+    DEACTIVATE_EXECUTOR 3
+    DEACTIVATE_EXECUTOR 4
+    DEACTIVATE_EXECUTOR 5
+    EXECUTE_SUBROUTINE .deactivate_npc_slots
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .dance_maria_goddess
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .dance_maria_goddess
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_main
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_bachelor_wait
+    SET_OTHER_EXECUTOR_PTR 7, .dance_goddess_partner_wait
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+
+.dance_loop_maria:
+    SET_ENTITY_ANIMATION 91
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 91
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    EXECUTE_SUBROUTINE .dance_maria_turn
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_maria_bow
+    EXECUTE_SUBROUTINE .dance_maria_turn
+    EXECUTE_SUBROUTINE .dance_loop_maria
+
+.dance_maria_bow:
+    SET_ENTITY_ANIMATION 93
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 94
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 95
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_maria_turn:
+    SET_ENTITY_ANIMATION 96
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 97
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 96
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_spawn_npcs_alt:
+    SPAWN_EXECUTOR 6, .dance_basil_pos
+    SPAWN_EXECUTOR 7, .dance_lillia_pos_alt
+    SPAWN_EXECUTOR 8, .dance_mayor_pos
+    SPAWN_EXECUTOR 9, .dance_lillia_pos
+    TOGGLE_PAUSE_ENTITY 0
+    SPAWN_EXECUTOR 0, .player_dance_spawn
+    SET_WAIT_FRAMES 1
+    SET_OTHER_EXECUTOR_PTR 38, .dance_map_origin
+    SET_COORDINATES -16, 0, 32
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 1
+    UPDATE_GLOBAL_RGBA 255, 255, 255, 255, 8
+    WAIT_RGBA_FINISHED
+    RETURN_FROM_SUBROUTINE
+
+.dance_maria_goddess:
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_alt
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_basil_loop
+    SET_OTHER_EXECUTOR_PTR 7, .dance_lillia_loop_alt
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gFlowerFestivalGoddess, .dance_goddess_body
+    EXECUTE_SUBROUTINE .dance_loop_maria
+
+.dance_goddess_maria_bow:
+    SET_ENTITY_ANIMATION 660
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 661
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 662
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_maria_turn:
+    SET_ENTITY_ANIMATION 663
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 664
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 663
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_player_loop:
+    SET_ENTITY_ANIMATION 658
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 658
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    EXECUTE_SUBROUTINE .dance_goddess_maria_turn
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 659
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_maria_bow
+    EXECUTE_SUBROUTINE .dance_goddess_maria_turn
+    EXECUTE_SUBROUTINE .dance_player_loop
+
+.dance_goddess_turn1:
+    SET_ENTITY_ANIMATION 84
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 85
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 86
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_turn2:
+    SET_ENTITY_ANIMATION 87
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 88
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 87
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_body:
+    SET_ENTITY_ANIMATION 82
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 82
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    EXECUTE_SUBROUTINE .dance_goddess_turn2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_turn1
+    EXECUTE_SUBROUTINE .dance_goddess_turn2
+    EXECUTE_SUBROUTINE .dance_goddess_body
+
+.dance_spin_stub1:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    RETURN_FROM_SUBROUTINE
+
+.dance_spin_phase1:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_WAIT_FRAMES 78
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_WAIT_FRAMES 78
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 20
+    RETURN_FROM_SUBROUTINE
+
+.dance_spin_phase2:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    RETURN_FROM_SUBROUTINE
+
+.dance_spin_stub2:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 3
+    RETURN_FROM_SUBROUTINE
+
+.dance_spin_phase3:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_WAIT_FRAMES 78
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_WAIT_FRAMES 78
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    RETURN_FROM_SUBROUTINE
+
+.dance_spin_phase4:
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    SET_ASSET_ROTATION 1
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 2
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 3
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 4
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 5
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 6
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 7
+    SET_WAIT_FRAMES 3
+    SET_ASSET_ROTATION 0
+    SET_WAIT_FRAMES 5
+    SET_ENTITY_DIRECTIONAL_ANIMATION 8
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    RETURN_FROM_SUBROUTINE
+
+.dance_mayor_anim:
+    SET_ENTITY_ANIMATION 23
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 24
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 23
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_mayor_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_mayor_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_mayor_anim
+    EXECUTE_SUBROUTINE .dance_mayor_loop
+
+.dance_basil_anim:
+    SET_ENTITY_ANIMATION 19
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 20
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 19
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_basil_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_basil_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_basil_anim
+    EXECUTE_SUBROUTINE .dance_basil_loop
+
+.dance_harris_anim:
+    SET_ENTITY_ANIMATION 41
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 42
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 41
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_harris_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_harris_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_harris_anim
+    EXECUTE_SUBROUTINE .dance_harris_loop
+
+.dance_gray_anim:
+    SET_ENTITY_ANIMATION 52
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 53
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 52
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_gray_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_gray_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_gray_anim
+    EXECUTE_SUBROUTINE .dance_gray_loop
+
+.dance_jeff_anim:
+    SET_ENTITY_ANIMATION 49
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 50
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 49
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_jeff_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_jeff_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_jeff_anim
+    EXECUTE_SUBROUTINE .dance_jeff_loop
+
+.dance_cliff_anim:
+    SET_ENTITY_ANIMATION 38
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 39
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 38
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_cliff_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_cliff_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_cliff_anim
+    EXECUTE_SUBROUTINE .dance_cliff_loop
+
+.dance_kai_anim:
+    SET_ENTITY_ANIMATION 45
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 46
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 45
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_kai_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_kai_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_kai_anim
+    EXECUTE_SUBROUTINE .dance_kai_loop
+
+.dance_potion_anim:
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 19
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_potion_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase1
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_potion_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase2
+    EXECUTE_SUBROUTINE .dance_spin_stub1
+    EXECUTE_SUBROUTINE .dance_potion_anim
+    EXECUTE_SUBROUTINE .dance_potion_loop
+
+.dance_lillia_anim:
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 19
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_lillia_loop:
+    EXECUTE_SUBROUTINE .dance_spin_phase3
+    EXECUTE_SUBROUTINE .dance_spin_stub2
+    EXECUTE_SUBROUTINE .dance_lillia_anim
+    EXECUTE_SUBROUTINE .dance_spin_phase4
+    EXECUTE_SUBROUTINE .dance_spin_stub2
+    EXECUTE_SUBROUTINE .dance_lillia_anim
+    EXECUTE_SUBROUTINE .dance_lillia_loop
+
+.dance_lillia_anim_alt:
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 19
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 18
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_lillia_loop_alt:
+    EXECUTE_SUBROUTINE .dance_spin_phase3
+    EXECUTE_SUBROUTINE .dance_spin_stub2
+    EXECUTE_SUBROUTINE .dance_lillia_anim_alt
+    EXECUTE_SUBROUTINE .dance_spin_phase4
+    EXECUTE_SUBROUTINE .dance_spin_stub2
+    EXECUTE_SUBROUTINE .dance_lillia_anim_alt
+    EXECUTE_SUBROUTINE .dance_lillia_loop_alt
+
+; ----- Dance sequence: chosen Popuri -----
+
+.dance_sequence_popuri:
+    UPDATE_U8_VALUE 10, 255, npcAffection[POPURI]
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 4
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    DEACTIVATE_EXECUTOR 1
+    DEACTIVATE_EXECUTOR 3
+    DEACTIVATE_EXECUTOR 4
+    DEACTIVATE_EXECUTOR 5
+    EXECUTE_SUBROUTINE .deactivate_npc_slots
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .dance_popuri_goddess
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .dance_popuri_goddess
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_main
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_bachelor_wait
+    SET_OTHER_EXECUTOR_PTR 7, .dance_goddess_partner_wait
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+
+.dance_loop_popuri:
+    SET_ENTITY_ANIMATION 97
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 97
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    EXECUTE_SUBROUTINE .dance_popuri_turn
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 98
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_popuri_bow
+    EXECUTE_SUBROUTINE .dance_popuri_turn
+    EXECUTE_SUBROUTINE .dance_loop_popuri
+
+.dance_popuri_bow:
+    SET_ENTITY_ANIMATION 99
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 100
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 101
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_popuri_turn:
+    SET_ENTITY_ANIMATION 102
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 103
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 102
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_popuri_goddess:
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_alt
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_basil_loop
+    SET_OTHER_EXECUTOR_PTR 7, .dance_lillia_loop_alt
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 1, 1, gFlowerFestivalGoddess, .dance_goddess_popuri_body
+    EXECUTE_SUBROUTINE .dance_loop_popuri
+
+.dance_goddess_popuri_bow:
+    SET_ENTITY_ANIMATION 90
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 91
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 92
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_popuri_turn:
+    SET_ENTITY_ANIMATION 93
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 94
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 93
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_popuri_body:
+    SET_ENTITY_ANIMATION 88
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_turn
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 89
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_bow
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_turn
+    EXECUTE_SUBROUTINE .dance_goddess_popuri_body
+
+; ----- Dance sequence: chosen Elli -----
+
+.dance_sequence_elli:
+    UPDATE_U8_VALUE 10, 255, npcAffection[ELLI]
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 4
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    DEACTIVATE_EXECUTOR 1
+    DEACTIVATE_EXECUTOR 2
+    DEACTIVATE_EXECUTOR 4
+    DEACTIVATE_EXECUTOR 5
+    EXECUTE_SUBROUTINE .deactivate_npc_slots
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .dance_elli_goddess
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .dance_elli_goddess
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_main
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_bachelor_wait
+    SET_OTHER_EXECUTOR_PTR 7, .dance_goddess_partner_wait
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+
+.dance_loop_elli:
+    SET_ENTITY_ANIMATION 87
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 87
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    EXECUTE_SUBROUTINE .dance_elli_turn
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_elli_bow
+    EXECUTE_SUBROUTINE .dance_elli_turn
+    EXECUTE_SUBROUTINE .dance_loop_elli
+
+.dance_elli_bow:
+    SET_ENTITY_ANIMATION 89
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 90
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 91
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_elli_turn:
+    SET_ENTITY_ANIMATION 92
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 93
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 92
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_elli_goddess:
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_alt
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_basil_loop
+    SET_OTHER_EXECUTOR_PTR 7, .dance_lillia_loop_alt
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 2, 2, gFlowerFestivalGoddess, .dance_goddess_elli_body
+    EXECUTE_SUBROUTINE .dance_loop_elli
+
+.dance_goddess_elli_bow:
+    SET_ENTITY_ANIMATION 80
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 81
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 82
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_elli_turn:
+    SET_ENTITY_ANIMATION 83
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 84
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 83
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_elli_body:
+    SET_ENTITY_ANIMATION 78
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 78
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    EXECUTE_SUBROUTINE .dance_goddess_elli_turn
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 79
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_elli_bow
+    EXECUTE_SUBROUTINE .dance_goddess_elli_turn
+    EXECUTE_SUBROUTINE .dance_goddess_elli_body
+
+; ----- Dance sequence: chosen Ann -----
+
+.dance_sequence_ann:
+    UPDATE_U8_VALUE 10, 255, npcAffection[ANN]
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 4
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    DEACTIVATE_EXECUTOR 1
+    DEACTIVATE_EXECUTOR 2
+    DEACTIVATE_EXECUTOR 3
+    DEACTIVATE_EXECUTOR 5
+    EXECUTE_SUBROUTINE .deactivate_npc_slots
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .dance_ann_goddess
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .dance_ann_goddess
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_main
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_bachelor_wait
+    SET_OTHER_EXECUTOR_PTR 7, .dance_goddess_partner_wait
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+
+.dance_loop_ann:
+    SET_ENTITY_ANIMATION 92
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 92
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    EXECUTE_SUBROUTINE .dance_ann_turn
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 93
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_ann_bow
+    EXECUTE_SUBROUTINE .dance_ann_turn
+    EXECUTE_SUBROUTINE .dance_loop_ann
+
+.dance_ann_bow:
+    SET_ENTITY_ANIMATION 94
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 95
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 96
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_ann_turn:
+    SET_ENTITY_ANIMATION 97
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 98
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 97
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_ann_goddess:
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_alt
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_basil_loop
+    SET_OTHER_EXECUTOR_PTR 7, .dance_lillia_loop_alt
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 3, 3, gFlowerFestivalGoddess, .dance_goddess_ann_body
+    EXECUTE_SUBROUTINE .dance_loop_ann
+
+.dance_goddess_ann_bow:
+    SET_ENTITY_ANIMATION 85
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 86
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 87
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_ann_turn:
+    SET_ENTITY_ANIMATION 88
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 89
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 88
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_ann_body:
+    SET_ENTITY_ANIMATION 83
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 83
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    EXECUTE_SUBROUTINE .dance_goddess_ann_turn
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 84
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_ann_bow
+    EXECUTE_SUBROUTINE .dance_goddess_ann_turn
+    EXECUTE_SUBROUTINE .dance_goddess_ann_body
+
+; ----- Dance sequence: chosen Karen -----
+
+.dance_sequence_karen:
+    UPDATE_U8_VALUE 10, 255, npcAffection[KAREN]
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 4
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 8
+    WAIT_RGBA_FINISHED
+    DEACTIVATE_EXECUTOR 1
+    DEACTIVATE_EXECUTOR 2
+    DEACTIVATE_EXECUTOR 3
+    DEACTIVATE_EXECUTOR 4
+    EXECUTE_SUBROUTINE .deactivate_npc_slots
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .dance_karen_goddess
+    BRANCH_U8_VAR_WITHIN_RANGE 0, 0, gHarvestKing, .dance_karen_goddess
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_main
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_bachelor_wait
+    SET_OTHER_EXECUTOR_PTR 7, .dance_goddess_partner_wait
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+
+.dance_loop_karen:
+    SET_ENTITY_ANIMATION 66
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 66
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    EXECUTE_SUBROUTINE .dance_karen_turn
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 68
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_karen_bow
+    EXECUTE_SUBROUTINE .dance_karen_turn
+    EXECUTE_SUBROUTINE .dance_loop_karen
+
+.dance_karen_bow:
+    SET_ENTITY_ANIMATION 70
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_karen_turn:
+    SET_ENTITY_ANIMATION 72
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 74
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 72
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_karen_goddess:
+    EXECUTE_SUBROUTINE .dance_spawn_npcs_alt
+    EXECUTE_SUBROUTINE .dance_music_start
+    SET_OTHER_EXECUTOR_PTR 6, .dance_basil_loop
+    SET_OTHER_EXECUTOR_PTR 7, .dance_lillia_loop_alt
+    SET_OTHER_EXECUTOR_PTR 8, .dance_mayor_loop
+    SET_OTHER_EXECUTOR_PTR 9, .dance_lillia_loop
+    BRANCH_U8_VAR_WITHIN_RANGE 4, 4, gFlowerFestivalGoddess, .dance_goddess_karen_body
+    EXECUTE_SUBROUTINE .dance_loop_karen
+
+.dance_goddess_karen_bow:
+    SET_ENTITY_ANIMATION 89
+    WAIT_ENTITY_ANIMATION
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_karen_turn:
+    SET_ENTITY_ANIMATION 90
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_ANIMATION 91
+    WAIT_ENTITY_ANIMATION
+    SET_WAIT_FRAMES 14
+    SET_ENTITY_ANIMATION 90
+    WAIT_ENTITY_ANIMATION
+    SET_ENTITY_DIRECTIONAL_ANIMATION 0
+    RETURN_FROM_SUBROUTINE
+
+.dance_goddess_karen_body:
+    SET_ENTITY_ANIMATION 87
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 87
+    SET_WAIT_FRAMES 78
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 0, 0, -1, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 0, 0, 1, 48
+    SET_WAIT_FRAMES 20
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    EXECUTE_SUBROUTINE .dance_goddess_karen_turn
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA -1, 0, 0, 48
+    SET_WAIT_FRAMES 24
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    SET_WAIT_FRAMES 2
+    SET_ENTITY_ANIMATION 88
+    SET_FRAME_DELTA 1, 0, 0, 48
+    SET_WAIT_FRAMES 13
+    EXECUTE_SUBROUTINE .dance_goddess_karen_bow
+    EXECUTE_SUBROUTINE .dance_goddess_karen_turn
+    EXECUTE_SUBROUTINE .dance_goddess_karen_body
+
+; ============================================================
+; END-OF-DANCE CONTROLLER (slot 33) - fades music and screen,
+; deactivates all executors, returns to exit_cutscene
+; ============================================================
+
+.dance_end_fadeout:
+    SET_WAIT_FRAMES 1100
+    SET_AUDIO_SEQUENCE_VOLUME 0, 0, 2
+    UPDATE_GLOBAL_RGBA 0, 0, 0, 0, 4
+    SET_WAIT_FRAMES 80
+    DEACTIVATE_EXECUTOR 0
+    DEACTIVATE_EXECUTOR 1
+    DEACTIVATE_EXECUTOR 2
+    DEACTIVATE_EXECUTOR 3
+    DEACTIVATE_EXECUTOR 4
+    DEACTIVATE_EXECUTOR 5
+    DEACTIVATE_EXECUTOR 6
+    DEACTIVATE_EXECUTOR 7
+    DEACTIVATE_EXECUTOR 8
+    DEACTIVATE_EXECUTOR 9
+    STOP_SEQUENCE_WITH_FADE 0, 1
+    IDLE_WHILE_SEQUENCE_PLAYING 0
+    EXECUTE_SUBROUTINE .exit_cutscene

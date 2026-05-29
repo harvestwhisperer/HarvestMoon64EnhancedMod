@@ -1,0 +1,12 @@
+{
+    "authors" : [
+        "Your name here"
+    ],
+    "description" : "Adds an in-game tool cycle shortcut to Harvest Moon 64: Recompiled.",
+    "display_name" : "Harvest Moon 64 Mod Template",
+    "game_id" : "hm64",
+    "id" : "hm64_recomp_mod_template",
+    "minimum_recomp_version" : "1.0.0",
+    "short_description" : "Cycle tools during gameplay.",
+    "version" : "1.0.0"
+}

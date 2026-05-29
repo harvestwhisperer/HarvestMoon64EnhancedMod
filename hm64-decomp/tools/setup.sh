@@ -1,0 +1,16 @@
+#!/bin/bash
+
+sudo apt-get update && sudo apt install -y python3 binutils-mips-linux-gnu gcc-mips-linux-gnu build-essential
+
+mkdir tools/gcc-2.7.2
+
+wget -c "https://github.com/decompals/mips-gcc-2.7.2/releases/download/main/gcc-2.7.2-linux.tar.gz" -O - | tar -xz -C tools/gcc-2.7.2
+
+wget -c "https://github.com/decompals/mips-binutils-2.6/releases/latest/download/binutils-2.6-linux.tar.gz" -O - | tar -xz -C tools/gcc-2.7.2
+
+sudo chmod -R +x tools/gcc-2.7.2
+
+gcc -o tools/build/mkldscript tools/build/mkldscript.c tools/build/spec.c tools/build/util.c
+chmod +x tools/build/mkldscript
+
+pip3 install -U -r tools/requirements.txt
