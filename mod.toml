@@ -19,10 +19,10 @@ Adds an in-game tool cycle shortcut to Harvest Moon 64: Recompiled."""
 
 # A short description that will show up in this mod's entry in the mod list. This should be human readable and kept short
 # to prevent it from being cut off due to the limited space.
-short_description = "Cycle tools during gameplay."
+short_description = "Various QOL improvements for Harvest Moon 64"
 
 # Authors of this mod.
-authors = [ "Your name here" ]
+authors = [ srbananaman, harvestwhisperer ]
 
 # ID of the target recomp game.
 game_id = "hm64"
