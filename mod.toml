@@ -67,4 +67,4 @@ func_reference_syms_file = "HarvestMoon64RecompSyms/hm64.us.syms.toml"
 data_reference_syms_files = [ "HarvestMoon64RecompSyms/hm64.us.datasyms.toml" ]
 
 # Additional files to include in the mod.
-additional_files = [ ]
+additional_files = [ "thumb.png" ]
