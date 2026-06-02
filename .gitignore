@@ -4,4 +4,4 @@
 *.o
 *.exe
 *.bin
-build/src
+/build/src
