@@ -54,6 +54,91 @@ native_libraries = [
 #    { name = "my_native_library", funcs = ["my_native_library_function"] }
 ]
 
+# --- Submod toggles ---
+
+[[manifest.config_options]]
+id = "enable_rain_watering"
+name = "Auto-Water in Rain"
+description = "Automatically water crops that are planted while it's raining."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "enable_tool_cycling"
+name = "Tool Cycling"
+description = "Cycle through your equipped tools by pressing L or Z."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "enable_leaderboard"
+name = "Ranking Button"
+description = "Enable farm ranking screen and show its button on the diary select screen."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "enable_music_persist"
+name = "Music Persistence"
+description = "Keep music playing across maps that share the same map (also applies to naming screen)."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "enable_clock_speed"
+name = "Clock Speed Control"
+description = "Enable adjuting the in-game clock speed (see Clock Speed below)."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
+[[manifest.config_options]]
+id = "clock_speed"
+name = "Clock Speed"
+description = "Adjust how quickly the in-game clock advances 1.00 = original speed (< 1 = slower)."
+type = "Number"
+min = 0.10
+max = 2.00
+step = 0.05
+precision = 2
+default = 1.00
+
+# --- Map fade controls ---
+
+[[manifest.config_options]]
+id = "fade_in_rate"
+name = "Fade-In Speed"
+description = "How quickly a map fades in when you enter it. Higher is faster (original game rate is 8)."
+type = "Number"
+min = 1
+max = 60
+step = 1
+precision = 0
+default = 8
+
+[[manifest.config_options]]
+id = "fade_out_rate"
+name = "Fade-Out Speed"
+description = "How quickly a map fades out when you leave it. Higher is faster (original game rate is 8)."
+type = "Number"
+min = 1
+max = 60
+step = 1
+precision = 0
+default = 8
+
+[[manifest.config_options]]
+id = "unblock_movement"
+name = "Move During Fade-In"
+description = "Enable player control immediately on map load instead of waiting for the fade-in to finish."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
 # Inputs to the mod tool.
 [inputs]
 

@@ -1,10 +1,9 @@
 // Map loading optimizations.
 //
-// On maps with many ground objects, map
-// transitions were slow because the engine rebuilt the entire ground-object
-// render state once per object instead of once per map, re-read map data from
-// ROM on every transition, and recomputed each ground object's terrain height
-// every frame. This mod removes that redundant work.
+// On maps with many ground objects, map transitions are slow because the engine 
+// rebuilds the entire ground-object render state once per object instead of once 
+// per map, re-read map data from ROM on every transition, and recomputed each ground 
+// object's terrain height every frame. This mod removes that redundant work.
 //
 // Three independent optimizations:
 //   1. Redundant rebuild fix. addGroundObjectToMap() rebuilds the ground-object

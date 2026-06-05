@@ -3,20 +3,22 @@
 #include "common.h"
 #include "modding.h"
 
-#include "game/items.h"           // ToolUse, toolUse
-#include "game/groundObjects.h"   // GROUND_OBJECT_*, *_PLANTED_STAGE_1, INVALID_GROUND_OBJECT
-#include "game/level.h"           // gBaseMapIndex, groundObjectsGridX/Z
-#include "game/player.h"          // getOffsetTileCoordinates
-#include "game/time.h"            // gSeason, SPRING/SUMMER/AUTUMN
-#include "game/weather.h"         // gWeather, RAIN
+#include "game/items.h"           
+#include "game/groundObjects.h"   
+#include "game/level.h"           
+#include "game/player.h"          
+#include "game/time.h"            
+#include "game/weather.h"         
 
-#include "system/entity.h"        // entities
-#include "system/graphic.h"       // convertScreenDirectionToWorldDirection, DIRECTION_NE
-#include "system/mapController.h" // MAIN_MAP_INDEX
+#include "system/entity.h"        
+#include "system/graphic.h"       
+#include "system/mapController.h" 
 
-#include "assetIndices/entities.h" // ENTITY_PLAYER
-#include "assetIndices/maps.h"     // GREENHOUSE, FARM
-#include "assetIndices/sfxs.h"     // SEEDS_SFX
+#include "assetIndices/entities.h" 
+#include "assetIndices/maps.h"     
+#include "assetIndices/sfxs.h"     
+
+#include "mod_config.h"            
 
 extern u8 toolSweepOffsetsLeft[];
 extern u8 toolSweepOffsetsRight[];
@@ -25,7 +27,8 @@ extern void playSfx(u16 index);
 
 static u8 applyRainToSownCrop(u8 groundObjectIndex) {
 
-    if (gWeather == RAIN && gBaseMapIndex == FARM
+    if (config_enabled("enable_rain_watering")
+        && gWeather == RAIN && gBaseMapIndex == FARM
         && (getGroundObjectToolInteractionFlags(groundObjectIndex) & GROUND_OBJECT_WATERABLE)) {
         groundObjectIndex++;
     }

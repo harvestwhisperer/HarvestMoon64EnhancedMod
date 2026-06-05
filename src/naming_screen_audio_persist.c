@@ -34,6 +34,8 @@
 
 #include "modding.h"
 
+#include "mod_config.h"           
+
 extern void loadNameSelectionSprites(void);
 extern void deactivateNamingScreenSprites(void);
 extern void loadSeasonSelectionSprites(void);
@@ -64,7 +66,7 @@ RECOMP_PATCH void initializeNamingScreen(u8* arg0, u8 arg1) {
 
     namingScreenContext.dialogueIndex = arg1;
 
-    if (gCurrentAudioSequenceIndex != NAMING_SCREEN_THEME) {
+    if (!config_enabled("enable_music_persist") || gCurrentAudioSequenceIndex != NAMING_SCREEN_THEME) {
         stopCurrentAudioSequence(NAMING_SCREEN_THEME);
         setCurrentAudioSequence(NAMING_SCREEN_THEME);
         setAudioSequenceVolume(NAMING_SCREEN_THEME, SEQUENCE_VOLUME);
@@ -326,7 +328,7 @@ RECOMP_PATCH void namingScreenCallback(void) {
                                 updateSpriteRGBA(0x8E, 0, 0, 0, 0, 8);
                                 updateSpriteRGBA(0x91, 0, 0, 0, 0, 8);
 
-                                if (namingScreenContext.screenType >= NAMING_SCREEN_TYPE_DOG) {
+                                if (config_enabled("enable_music_persist") && namingScreenContext.screenType >= NAMING_SCREEN_TYPE_DOG) {
 
                                     stopAudioSequenceWithDefaultFadeOut(NAMING_SCREEN_THEME);
 

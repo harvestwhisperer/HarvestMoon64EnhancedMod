@@ -9,6 +9,8 @@
 #include "system/globalSprites.h"
 #include "system/sprite.h"
 
+#include "mod_config.h"
+
 extern void playSfx(u16 index);
 
 #define LOAD_GAME_RANKING_BUTTON 0xAD
@@ -26,6 +28,10 @@ static void clear_button_repeat(u32 button_mask) {
 
 RECOMP_HOOK_RETURN("loadDiarySelectScreen")
 void hm64_leaderboard_load_diary_select_screen_return(void) {
+    if (!config_enabled("enable_leaderboard")) {
+        return;
+    }
+
     dmaSprite(
         LOAD_GAME_RANKING_BUTTON,
         (u32)&_loadGameScreenTextureSegmentRomStart,
@@ -53,6 +59,10 @@ void hm64_leaderboard_load_diary_select_screen_return(void) {
 
 RECOMP_HOOK("gameSelectCallback")
 void hm64_leaderboard_game_select_hook(void) {
+    if (!config_enabled("enable_leaderboard")) {
+        return;
+    }
+
     if (loadGameScreenContext.action != LOAD_GAME_ACTION_SELECT_COLUMN) {
         return;
     }

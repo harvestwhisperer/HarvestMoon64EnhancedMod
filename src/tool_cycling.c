@@ -5,6 +5,8 @@
 #include "system/audio.h"
 #include "system/controller.h"
 
+#include "mod_config.h"
+
 extern u8 getToolLevel(u8 tool);
 extern void playSfx(u16 index);
 
@@ -96,7 +98,13 @@ static void clear_tool_cycle_button_pressed(u32 button_mask) {
 
 RECOMP_HOOK("handlePlayerInput")
 void hm64_qol_handle_player_input_hook(void) {
-    u32 button_pressed = get_tool_cycle_button_pressed();
+    u32 button_pressed;
+
+    if (!config_enabled("enable_tool_cycling")) {
+        return;
+    }
+
+    button_pressed = get_tool_cycle_button_pressed();
 
     if (!button_pressed) {
         return;
