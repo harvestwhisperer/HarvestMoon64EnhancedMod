@@ -65,8 +65,8 @@ RECOMP_PATCH void handleExitLevel(u16 arg0, u16 callbackIndex) {
     currentMusicIndex = getMusicIndexForMap(gBaseMapIndex, gSeason, gHour);
     nextMusicIndex = getMusicIndexForMap(nextMapIndex, gSeason, gHour);
 
-    // Only stop the current track if the next map uses a different one.
-    if (!config_enabled("enable_music_persist") || currentMusicIndex != nextMusicIndex) {
+    // Only stop the current track if the next map uses a different one or if naming screen or end of day
+    if (!config_enabled("enable_music_persist") || callbackIndex != MAP_LOAD || currentMusicIndex != nextMusicIndex) {
         stopAudioSequenceWithDefaultFadeOut(gCurrentAudioSequenceIndex);
     }
 
@@ -93,7 +93,7 @@ RECOMP_PATCH void exitLevelCallback(void) {
     currentMusicIndex = getMusicIndexForMap(gBaseMapIndex, gSeason, gHour);
     nextMusicIndex = getMusicIndexForMap(nextMapIndex, gSeason, gHour);
 
-    skipAudioWait = config_enabled("enable_music_persist") && (currentMusicIndex == nextMusicIndex);
+    skipAudioWait = config_enabled("enable_music_persist") && (gameLoopContext.callbackIndex == MAP_LOAD) && (currentMusicIndex == nextMusicIndex);
 
     if (checkMapRGBADone(MAIN_MAP_INDEX) && (skipAudioWait || checkDefaultSequenceChannelOpen(gCurrentAudioSequenceIndex))) {
 
