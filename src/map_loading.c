@@ -271,6 +271,36 @@ RECOMP_PATCH void deactivateAllMapControllers(void) {
 
 }
 
+RECOMP_PATCH bool activateMapAddition(u16 mapIndex, u16 mapAdditionIndex, bool loopFlag) {
+
+    MainMap *mm = &mainMap[mapIndex];
+
+    bool result = FALSE;
+
+    if (mapIndex == MAIN_MAP_INDEX && mm->mapState.flags & MAP_ACTIVE && mapAdditionIndex < 32) {
+
+        if (!(mm->mapAdditions[mapAdditionIndex].flags & MAP_ADDITION_ACTIVE)) {
+
+            mm->mapAdditions[mapAdditionIndex].flags = MAP_ADDITION_ACTIVE;
+            mm->mapAdditions[mapAdditionIndex].processingTimer = 0;
+            mm->mapAdditions[mapAdditionIndex].currentStep = 0;
+
+            result = TRUE;
+
+            if (loopFlag) {
+                mm->mapAdditions[mapAdditionIndex].flags = MAP_ADDITION_ACTIVE | MAP_ADDITION_LOOPING;
+                // reset cache for overlay screens (toolbox, freezer, cabinet)
+                mapControllers[MAIN_MAP_INDEX].flags &= ~MAP_CONTROLLER_DATA_CACHED;
+            }
+
+        }
+
+    }
+
+    return result;
+
+}
+
 // --- Optimization 3: precompute terrain heights once per load ----------------
 
 RECOMP_PATCH void setGroundObjects(u16 mapIndex) {
