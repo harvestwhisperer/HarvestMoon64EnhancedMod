@@ -139,6 +139,40 @@ type = "Enum"
 options = [ "On", "Off" ]
 default = "On"
 
+# --- Message box controls ---
+# These apply the next time a message box is set up (i.e. the next line of
+# dialogue), so changes take effect almost immediately during normal play.
+
+[[manifest.config_options]]
+id = "text_reveal_speed"
+name = "Message Text Speed"
+description = "How quickly dialogue text is revealed character by character. Higher is faster (original game speed is 4)."
+type = "Number"
+min = 1
+max = 7
+step = 1
+precision = 0
+default = 4
+
+[[manifest.config_options]]
+id = "line_scroll_speed"
+name = "Message Scroll Speed"
+description = "Speed multiplier for the message box scrolling up to the next line once it fills. Higher scrolls faster (1 = original game speed)."
+type = "Number"
+min = 1
+max = 6
+step = 1
+precision = 0
+default = 1
+
+[[manifest.config_options]]
+id = "message_sfx"
+name = "Message Box Sound Effects"
+description = "All message box sound effects: the per-character text blips and the close/confirm sounds."
+type = "Enum"
+options = [ "On", "Off" ]
+default = "On"
+
 # Inputs to the mod tool.
 [inputs]
 
