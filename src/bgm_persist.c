@@ -1,24 +1,25 @@
 #include "common.h"
 #include "modding.h"
 
-#include "system/audio.h"         // gCurrentAudioSequenceIndex
-#include "system/cutscene.h"      // deactivateCutsceneExecutors, initializeCutsceneExecutors
-#include "system/entity.h"        // setEntitiesRGBA, setEntitiesRGBAWithTransition
-#include "system/map.h"           // checkMapRGBADone
-#include "system/mapController.h" // MAIN_MAP_INDEX, setMapControllerRGBA(WithTransition)
+#include "system/audio.h"         
+#include "system/cutscene.h"      
+#include "system/entity.h"        
+#include "system/map.h"           
+#include "system/mapController.h" 
 
-#include "game/cutscenes.h"       // gCutsceneFlags, gCutsceneCompletionFlags, handleCutsceneCompletion
-#include "game/game.h"            // gameLoopContext, resetGlobalLighting, setMainLoopCallbackFunctionIndex
-#include "game/gameAudio.h"       // stopAudioSequenceWithDefaultFadeOut, checkDefaultSequenceChannelOpen
-#include "game/level.h"           // getMapForSpawnPoint, gBaseMapIndex, gSpawnPointIndex
-#include "game/time.h"            // gSeason, gHour
-#include "game/transition.h"      // pauseGameplay
-#include "game/weather.h"         // RAIN, TYPHOON, gWeather
+#include "game/cutscenes.h"       
+#include "game/game.h"            
+#include "game/gameAudio.h"       
+#include "game/level.h"           
+#include "game/time.h"            
+#include "game/transition.h"      
+#include "game/weather.h"         
 
-#include "mainLoop.h"             // MAP_LOAD, EXIT_LEVEL
+#include "mainLoop.h"             
 
-#include "assetIndices/maps.h"    // BEACH
-#include "assetIndices/sfxs.h"    // RAIN_SFX, TYPHOON_SFX
+#include "assetIndices/maps.h"    
+#include "assetIndices/sfxs.h"    
+#include "mod_config.h"           
 
 extern u8 levelToMusicMappings[][8];
 
@@ -55,16 +56,17 @@ RECOMP_PATCH void handleExitLevel(u16 arg0, u16 callbackIndex) {
     u8 nextMapIndex;
     u8 currentMusicIndex;
     u8 nextMusicIndex;
+    s16 rate = fade_out_rate();
 
-    setMapControllerRGBAWithTransition(MAIN_MAP_INDEX, 0, 0, 0, 0, 8);
-    setEntitiesRGBAWithTransition(0, 0, 0, 0, 8);
+    setMapControllerRGBAWithTransition(MAIN_MAP_INDEX, 0, 0, 0, 0, rate);
+    setEntitiesRGBAWithTransition(0, 0, 0, 0, rate);
 
     nextMapIndex = getMapForSpawnPoint(gSpawnPointIndex);
     currentMusicIndex = getMusicIndexForMap(gBaseMapIndex, gSeason, gHour);
     nextMusicIndex = getMusicIndexForMap(nextMapIndex, gSeason, gHour);
 
-    // Only stop the current track if the next map uses a different one.
-    if (currentMusicIndex != nextMusicIndex) {
+    // Only stop the current track if the next map uses a different one or if naming screen or end of day
+    if (!config_enabled("enable_music_persist") || callbackIndex != MAP_LOAD || currentMusicIndex != nextMusicIndex) {
         stopAudioSequenceWithDefaultFadeOut(gCurrentAudioSequenceIndex);
     }
 
@@ -91,7 +93,7 @@ RECOMP_PATCH void exitLevelCallback(void) {
     currentMusicIndex = getMusicIndexForMap(gBaseMapIndex, gSeason, gHour);
     nextMusicIndex = getMusicIndexForMap(nextMapIndex, gSeason, gHour);
 
-    skipAudioWait = (currentMusicIndex == nextMusicIndex);
+    skipAudioWait = config_enabled("enable_music_persist") && (gameLoopContext.callbackIndex == MAP_LOAD) && (currentMusicIndex == nextMusicIndex);
 
     if (checkMapRGBADone(MAIN_MAP_INDEX) && (skipAudioWait || checkDefaultSequenceChannelOpen(gCurrentAudioSequenceIndex))) {
 
