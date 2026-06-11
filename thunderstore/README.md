@@ -12,3 +12,4 @@ Adds various quality-of-life improvements to Harvest Moon 64:
 
 \- Faster map loading
 
+\- Message box speed controls

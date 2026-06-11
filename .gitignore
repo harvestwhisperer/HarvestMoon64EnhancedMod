@@ -4,6 +4,9 @@
 *.o
 *.exe
 *.bin
-build
-/.vs
+
+build/
+/.vs/
+
 thunderstore/*.nrm
+thunderstore/*.zip
