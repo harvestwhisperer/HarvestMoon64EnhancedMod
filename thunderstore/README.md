@@ -1,4 +1,4 @@
-﻿# HarvestMoon64EnhancedMod
+# HarvestMoon64EnhancedMod
 
 Adds various quality-of-life improvements to Harvest Moon 64:
 
