@@ -6,3 +6,4 @@
 *.bin
 build
 /.vs
+thunderstore/*.nrm
