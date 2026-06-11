@@ -5,6 +5,7 @@ Adds various quality-of-life improvements to Harvest Moon 64:
 - Farm ranking screen: restores the farm ranking screen.
 - Rain planting: crops sown while raining get automatically watered.
 - Faster map loading
+- Message box configuration: adjust text reveal speed and scroll speed, and toggle message box sound effects.
 ### Tools
 
 You'll need to install `clang` and `make` to build the mod.
