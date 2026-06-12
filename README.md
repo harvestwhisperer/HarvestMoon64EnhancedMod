@@ -6,6 +6,7 @@ Adds various quality-of-life improvements to Harvest Moon 64:
 - Rain planting: crops sown while raining get automatically watered.
 - Faster map loading
 - Message box configuration: adjust text reveal speed and scroll speed, and toggle message box sound effects.
+- Playable ocarina: once acquired, press D-Up to play.
 ### Tools
 
 You'll need to install `clang` and `make` to build the mod.

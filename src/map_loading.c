@@ -271,6 +271,17 @@ RECOMP_PATCH void deactivateAllMapControllers(void) {
 
 }
 
+// The naming screen's texture buffer overlaps MAP_DATA_BUFFER. When a naming
+// screen is opened mid-cutscene (after a map is already loaded and its data
+// cached), loading the naming screen clobbers the cached map data, so the
+// map-data cache must be invalidated to force dmaMapAssets() to re-read it when
+// gameplay resumes. Without the cache (optimization 2 above) dmaMapAssets always
+// re-read, so this only matters once that caching is in place.
+RECOMP_HOOK("loadNamingScreenCallback")
+void hm64_map_loading_naming_screen_invalidate(void) {
+    mapControllers[MAIN_MAP_INDEX].flags &= ~MAP_CONTROLLER_DATA_CACHED;
+}
+
 RECOMP_PATCH bool activateMapAddition(u16 mapIndex, u16 mapAdditionIndex, bool loopFlag) {
 
     MainMap *mm = &mainMap[mapIndex];
