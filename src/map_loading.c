@@ -282,6 +282,16 @@ void hm64_map_loading_naming_screen_invalidate(void) {
     mapControllers[MAIN_MAP_INDEX].flags &= ~MAP_CONTROLLER_DATA_CACHED;
 }
 
+// The TV content sprites are DMA'd into MAP_OBJECT_TV_TEXTURE_1 (0x802EB800),
+// the same vaddr as GROUND_OBJECTS_TEXTURE_BUFFER. Setting up the TV clobbers the
+// cached ground-object textures, so the ground-object asset cache must be
+// invalidated to force loadGroundObjects() to re-read them on the next map that
+// has ground objects. Only needed because of that caching (optimization 2).
+RECOMP_HOOK("initializeTVAssets")
+void hm64_map_loading_tv_assets_invalidate(void) {
+    mapControllers[MAIN_MAP_INDEX].flags &= ~MAP_CONTROLLER_GROUND_OBJECTS_CACHED;
+}
+
 RECOMP_PATCH bool activateMapAddition(u16 mapIndex, u16 mapAdditionIndex, bool loopFlag) {
 
     MainMap *mm = &mainMap[mapIndex];
